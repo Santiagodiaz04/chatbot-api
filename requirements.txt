@@ -1,0 +1,7 @@
+# API Chatbot Inmobiliario CTR (Python 3.9–3.12 recomendado)
+fastapi>=0.100,<0.115
+uvicorn[standard]>=0.22
+mysql-connector-python>=8.0
+httpx>=0.24
+pydantic>=2.0
+python-dotenv>=1.0
