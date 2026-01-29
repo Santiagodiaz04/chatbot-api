@@ -8,13 +8,14 @@ from typing import Any, Generator, List, Optional
 import mysql.connector
 from mysql.connector import Error
 
-from config import DB_CHARSET, DB_HOST, DB_NAME, DB_PASS, DB_USER
+from config import DB_CHARSET, DB_HOST, DB_NAME, DB_PASS, DB_PORT, DB_USER
 
 
 def get_conn():
     """Conexión MySQL (misma BD que PHP)."""
     return mysql.connector.connect(
         host=DB_HOST,
+        port=DB_PORT,
         database=DB_NAME,
         user=DB_USER,
         password=DB_PASS,

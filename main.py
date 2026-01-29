@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from config import CORS_ORIGINS, PHP_BASE_URL
-from db import crear_conversacion, guardar_mensaje
+from config import CORS_ORIGINS, DB_PASS, PHP_BASE_URL
+from db import crear_conversacion, get_conn, guardar_mensaje
 from handlers import dispatch
 
 logger = logging.getLogger("chatbot-api")
@@ -110,6 +110,34 @@ class ChatResponse(BaseModel):
 def health():
     """Health check para monitoreo."""
     return {"status": "ok", "service": "chatbot-api"}
+
+
+@app.get("/health/db")
+def health_db():
+    """
+    Diagnóstico de conexión a la BD. Devuelve el error exacto si falla.
+    Útil para ver por qué Railway no conecta a MySQL (sin revisar logs).
+    """
+    try:
+        conn = get_conn()
+        conn.ping(reconnect=False)
+        conn.close()
+        return {"status": "ok", "db": "connected"}
+    except Exception as e:
+        err = str(e)
+        # No exponer contraseña si aparece en el mensaje
+        if "password" in err.lower() or DB_PASS and DB_PASS in err:
+            err = err.replace(DB_PASS, "***")
+        logger.exception("Health DB: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "db": "disconnected",
+                "error": err,
+                "hint": "Revisa DB_HOST, DB_USER, DB_PASS, DB_NAME en Railway y MySQL remoto en Hostinger.",
+            },
+        )
 
 
 def _fallback_response(session_id: str) -> ChatResponse:
