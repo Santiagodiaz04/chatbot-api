@@ -1,5 +1,8 @@
 # handlers.py - Lógica de respuesta por intención
-"""Saludo, búsqueda, info, agendar cita. Tono cercano y orientado a venta."""
+"""
+Flujo: ENTENDER → CONSULTAR (BD) → RAZONAR → PERSUADIR.
+Motor de razonamiento integrado; tono de secretaria experta.
+"""
 
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +21,8 @@ from nlu import (
     INTENT_DESPEDIDA,
     INTENT_DUDA_GENERAL,
     INTENT_PEDIR_INFORMACION,
+    INTENT_PEDIR_RECOMENDACION,
+    INTENT_COMPARAR_OPCIONES,
     INTENT_SALUDO,
     detect_intent,
     extract_entities,
@@ -28,6 +33,7 @@ from nlu import (
     extract_email,
 )
 from php_client import horarios_disponibles, procesar_cita
+from reasoning import run_reasoning
 
 try:
     from llm_client import build_data_context, generate_reply as llm_generate_reply
@@ -78,73 +84,28 @@ def handle_buscar_propiedad(
     precio_max = ent.get("presupuesto_max") or contexto.get("presupuesto_max")
     habitaciones = ent.get("habitaciones") if ent.get("habitaciones") is not None else contexto.get("habitaciones")
     ubicacion = (ent.get("ubicacion") or "").strip() or (contexto.get("ubicacion") or "").strip()
-
-    # Si preguntan explícitamente por "proyectos", priorizar listado de proyectos (más resultados)
     pide_proyectos = "proyecto" in (texto or "").lower()
-    limite_proyectos = 6 if pide_proyectos else 3
 
-    props = buscar_propiedades(
+    match_type, props, proyectos, reasoning_text = run_reasoning(
         tipo=tipo,
         precio_min=precio_min,
         precio_max=precio_max,
         habitaciones=habitaciones,
-        ubicacion=ubicacion if ubicacion else None,
-        limite=6,
+        ubicacion=ubicacion or None,
+        pide_proyectos=pide_proyectos,
     )
-    proyectos = buscar_proyectos(ubicacion=ubicacion if ubicacion else None, limite=limite_proyectos)
 
-    sale_msg = _cfg("mensaje_venta_propiedades", "Estas opciones podrían interesarte. ¿Quieres ver más detalles o agendar una visita?")
-    urge_msg = _cfg("mensaje_urgencia", "Hay pocas con esas características; te conviene agendar pronto.")
     agenda_msg = _cfg("mensaje_agendar_cita", "¿Quieres agendar una visita? Te pido nombre, correo y teléfono para confirmar.")
-
-    lines: List[str] = []
     cards: List[Dict[str, Any]] = []
+    for p in props[:4]:
+        cards.append(_card_propiedad(p, base_url))
+    for pr in proyectos[:3]:
+        if precio_max is None or (pr.get("precio_desde") or 0) <= (precio_max or 0):
+            cards.append(_card_proyecto(pr, base_url))
 
-    if props:
-        if precio_max:
-            lines.append(f"Encontré **{len(props)}** opción(es) dentro de tu presupuesto.")
-        else:
-            lines.append(f"Encontré **{len(props)}** propiedad(es) que encajan con lo que buscas.")
-        for p in props[:4]:
-            cards.append(_card_propiedad(p, base_url))
-        if len(props) <= 2:
-            lines.append(urge_msg)
-        lines.append(sale_msg)
+    lines = [reasoning_text]
+    if cards:
         lines.append(agenda_msg)
-    elif proyectos:
-        if precio_max is not None:
-            proyectos = [pr for pr in proyectos if (pr.get("precio_desde") or 0) <= precio_max]
-        if proyectos:
-            lines.append(f"En proyectos encontré **{len(proyectos)}** opción(es).")
-            for pr in proyectos[:3]:
-                cards.append(_card_proyecto(pr, base_url))
-            lines.append(sale_msg)
-            lines.append(agenda_msg)
-        else:
-            # Proyectos filtrados por presupuesto a cero: ofrecer opciones más cercanas
-            _add_opciones_cercanas_or_fallback(
-                tipo, precio_min, precio_max, habitaciones, ubicacion,
-                lines, cards, base_url, agenda_msg, sale_msg,
-            )
-    else:
-        # Sin resultados: si preguntaron por "proyectos" explícitamente, ofrecer propiedades (venta/renta/lotes)
-        if pide_proyectos:
-            props_general = buscar_propiedades(tipo=None, limite=6)
-            if props_general:
-                lines.append("Por ahora no tenemos proyectos cargados; sí tenemos **propiedades en venta, renta y lotes**. Aquí algunas opciones:")
-                for p in props_general[:4]:
-                    cards.append(_card_propiedad(p, base_url))
-                lines.append(sale_msg)
-                lines.append(agenda_msg)
-                ctx = {"tipo": tipo, "presupuesto_min": precio_min, "presupuesto_max": precio_max, "habitaciones": habitaciones, "ubicacion": ubicacion or None}
-                return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": ctx}
-            lines.append("Por ahora no tenemos proyectos cargados; sí trabajamos con propiedades en venta, renta y lotes. ¿Quieres que ajustemos criterios o agendamos una visita con un asesor?")
-            lines.append(agenda_msg)
-        else:
-            _add_opciones_cercanas_or_fallback(
-                tipo, precio_min, precio_max, habitaciones, ubicacion,
-                lines, cards, base_url, agenda_msg, sale_msg,
-            )
 
     ctx = {
         "tipo": tipo,
@@ -264,6 +225,20 @@ def _add_opciones_cercanas_or_fallback(
     lines.append(agenda_msg)
 
 
+def _extract_lugar_info(texto: str) -> Optional[str]:
+    """Extrae lugar de 'información de Ibiza', 'info de X', 'todo de X'."""
+    if not texto or len(texto.strip()) < 4:
+        return None
+    t = (texto or "").strip().lower()
+    for prefix in ["informacion de ", "información de ", "info de ", "todo de ", "datos de ", "qué hay en ", "que hay en "]:
+        if prefix in t:
+            resto = t.split(prefix, 1)[-1].strip()
+            lugar = resto.split()[0] if resto else None
+            if lugar and len(lugar) >= 2:
+                return lugar
+    return None
+
+
 def handle_pedir_informacion(
     texto: str,
     conversacion_id: Optional[str],
@@ -277,6 +252,29 @@ def handle_pedir_informacion(
         return {"text": msg, "actions": [], "context": {}}
 
     t = (texto or "").lower()
+    # "Información de [lugar]" (ej. Ibiza): buscar en BD y mostrar propiedades/proyectos con imágenes
+    lugar = _extract_lugar_info(texto)
+    if lugar:
+        props = buscar_propiedades(ubicacion=lugar, limite=6)
+        proyectos = buscar_proyectos(ubicacion=lugar, limite=4)
+        lines = []
+        cards = []
+        if props or proyectos:
+            if props:
+                lines.append(f"En **{lugar}** tenemos estas propiedades:")
+                for p in props[:4]:
+                    cards.append(_card_propiedad(p, base_url))
+            if proyectos:
+                lines.append(f"Y estos proyectos en **{lugar}**:")
+                for pr in proyectos[:3]:
+                    cards.append(_card_proyecto(pr, base_url))
+            lines.append("¿Quieres más detalles de alguna o agendar una visita?")
+            agenda_msg = _cfg("mensaje_agendar_cita", "¿Quieres agendar una visita? Te pido nombre, correo y teléfono para confirmar.")
+            lines.append(agenda_msg)
+            return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": {"ubicacion": lugar}}
+        lines.append(f"No encontré propiedades ni proyectos con ese nombre. ¿Buscas en otra zona o quieres que te muestre opciones generales?")
+        return {"text": "\n\n".join(lines), "actions": [], "cards": [], "context": {}}
+
     # Ubicación / quiénes somos: usar config si no hay FAQ (preguntas rápidas y sencillas)
     if any(w in t for w in ["donde", "ubicados", "ubicacion", "ubicación", "direccion", "dirección"]):
         msg = _cfg("respuesta_ubicacion") or _cfg("ubicacion") or "Puedes ver nuestra ubicación y datos de contacto en la web. ¿Quieres que te muestre propiedades o agendar una visita?"
@@ -307,6 +305,11 @@ def handle_agendar_cita(
     ref_id = contexto.get("referencia_id")
     fecha = contexto.get("fecha_cita") or extract_fecha(texto)
     hora = contexto.get("hora_cita") or extract_hora(texto)
+    # Guardar fecha/hora en contexto si el usuario dijo "mañana 8 am" etc., para no perderlas
+    if fecha:
+        contexto["fecha_cita"] = fecha
+    if hora:
+        contexto["hora_cita"] = hora
 
     if esperando == "nombre" and nombre:
         contexto["nombre"] = nombre
@@ -432,6 +435,45 @@ def handle_confirmar_datos(
     return handle_agendar_cita(texto, contexto, conversacion_id, base_url)
 
 
+def handle_pedir_recomendacion(
+    texto: str,
+    contexto: Dict[str, Any],
+    conversacion_id: Optional[str],
+    base_url: str,
+) -> Dict[str, Any]:
+    """Recomendaciones: usa motor de razonamiento con filtros relajados (destacados)."""
+    tipo = contexto.get("tipo")
+    ubicacion = (contexto.get("ubicacion") or "").strip() or None
+    match_type, props, proyectos, reasoning_text = run_reasoning(
+        tipo=tipo,
+        precio_min=None,
+        precio_max=None,
+        habitaciones=None,
+        ubicacion=ubicacion,
+        pide_proyectos=False,
+    )
+    agenda_msg = _cfg("mensaje_agendar_cita", "¿Quieres agendar una visita? Te pido nombre, correo y teléfono para confirmar.")
+    cards: List[Dict[str, Any]] = []
+    for p in props[:4]:
+        cards.append(_card_propiedad(p, base_url))
+    for pr in proyectos[:3]:
+        cards.append(_card_proyecto(pr, base_url))
+    lines = [reasoning_text]
+    if cards:
+        lines.append(agenda_msg)
+    return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": contexto}
+
+
+def handle_comparar_opciones(
+    texto: str,
+    contexto: Dict[str, Any],
+    conversacion_id: Optional[str],
+    base_url: str,
+) -> Dict[str, Any]:
+    """Comparar opciones: mismo flujo que recomendación; motor razona con datos reales."""
+    return handle_pedir_recomendacion(texto, contexto, conversacion_id, base_url)
+
+
 def dispatch(
     texto: str,
     contexto: Dict[str, Any],
@@ -443,6 +485,8 @@ def dispatch(
         INTENT_SALUDO: lambda: handle_saludo(conversacion_id, base_url),
         INTENT_DESPEDIDA: lambda: handle_despedida(conversacion_id, base_url),
         INTENT_BUSCAR_PROPIEDAD: lambda: handle_buscar_propiedad(texto, contexto, conversacion_id, base_url),
+        INTENT_COMPARAR_OPCIONES: lambda: handle_comparar_opciones(texto, contexto, conversacion_id, base_url),
+        INTENT_PEDIR_RECOMENDACION: lambda: handle_pedir_recomendacion(texto, contexto, conversacion_id, base_url),
         INTENT_PEDIR_INFORMACION: lambda: handle_pedir_informacion(texto, conversacion_id, base_url),
         INTENT_AGENDAR_CITA: lambda: handle_agendar_cita(texto, contexto, conversacion_id, base_url),
         INTENT_CONFIRMAR_DATOS: lambda: handle_confirmar_datos(texto, contexto, conversacion_id, base_url),
@@ -453,12 +497,13 @@ def dispatch(
     if "context" not in out:
         out["context"] = {}
 
-    # Célula inteligente (IA): procesa respuesta con contexto de datos y conversación
+    # Célula inteligente (IA): procesa respuesta con contexto de datos, conversación y prompt del admin
     if llm_generate_reply and out.get("text"):
         try:
             data_ctx = build_data_context(out.get("cards")) if build_data_context else None
             last_user = (contexto.get("last_user_message") or "").strip() or None
             last_bot = (contexto.get("last_bot_message") or "").strip() or None
+            system_prompt = _cfg("prompt_sistema") or _cfg("instrucciones_ia") or None
             natural = llm_generate_reply(
                 texto,
                 out["text"],
@@ -466,6 +511,7 @@ def dispatch(
                 data_context=data_ctx,
                 last_user_message=last_user,
                 last_bot_message=last_bot,
+                system_prompt=system_prompt,
             )
             if natural:
                 out["text"] = natural

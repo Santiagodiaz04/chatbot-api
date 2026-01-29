@@ -1,7 +1,7 @@
 # llm_client.py - Célula inteligente: IA para análisis, contexto de datos y conversación fluida
 """
 Procesa respuestas con Gemini: contexto de BD (propiedades/proyectos), historial reciente
-y borrador del bot, para generar una respuesta natural y conversacional.
+y borrador del bot. Personalidad: secretaria experta inmobiliaria; nunca "no hay" sin alternativa.
 """
 
 import logging
@@ -12,6 +12,17 @@ import httpx
 from config import GEMINI_API_KEY, LLM_ENABLED
 
 logger = logging.getLogger("chatbot-api")
+
+# Personalidad por defecto: asesor inmobiliario inteligente (secretaria experta)
+DEFAULT_SYSTEM_PROMPT = (
+    "Eres la secretaria experta de CTR Bienes Raíces (inmobiliaria). "
+    "Comportamiento: amable, cercana, profesional. Analiza qué quiere el cliente, "
+    "usa SOLO la información que te damos (nunca inventes precios ni propiedades). "
+    "NUNCA digas 'no hay' sin ofrecer una alternativa o invitar a agendar. "
+    "Siempre orienta hacia ver la propiedad o agendar una visita. "
+    "Responde en el mismo idioma que el usuario. Tono conversacional; emojis moderados (🙂🏡📅). "
+    "Si el borrador ya ofrece alternativas, refuerza el valor y la invitación a agendar."
+)
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 MAX_TOKENS = 400
@@ -59,10 +70,11 @@ def process_response(
     data_context: Optional[str] = None,
     last_user_message: Optional[str] = None,
     last_bot_message: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> Optional[str]:
     """
     Célula inteligente: procesa el mensaje del usuario, el borrador del bot y el contexto
-    (datos de BD, último intercambio) para producir una respuesta natural y fluida.
+    (datos de BD, último intercambio). system_prompt: instrucciones desde el admin (chatbot_config).
     """
     if not LLM_ENABLED or not (GEMINI_API_KEY or "").strip():
         return None
@@ -80,10 +92,10 @@ def process_response(
     if data_context and data_context.strip():
         data_block = f"{data_context.strip()}\n\n"
 
+    base_instructions = (system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
+
     prompt = (
-        "Eres el asistente de CTR Bienes Raíces (inmobiliaria). "
-        "Responde en el mismo idioma que el usuario. Sé natural, breve y útil. "
-        "Usa SOLO la información que te damos; no inventes precios ni propiedades.\n\n"
+        f"{base_instructions}\n\n"
         f"{conversation_block}"
         f"Mensaje actual del usuario: {user_message[:600]}\n\n"
         f"{data_block}"
@@ -130,10 +142,11 @@ def generate_reply(
     data_context: Optional[str] = None,
     last_user_message: Optional[str] = None,
     last_bot_message: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> Optional[str]:
     """
     Punto de entrada: humaniza/processa la respuesta con la célula inteligente.
-    Acepta contexto de datos (resumen de cards) y último intercambio para conversación fluida.
+    system_prompt: instrucciones desde Admin (chatbot_config: prompt_sistema o instrucciones_ia).
     """
     return process_response(
         user_message=user_message,
@@ -142,4 +155,5 @@ def generate_reply(
         data_context=data_context,
         last_user_message=last_user_message,
         last_bot_message=last_bot_message,
+        system_prompt=system_prompt,
     )

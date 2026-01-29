@@ -1,12 +1,15 @@
 # nlu.py - Detección de intención y extracción de entidades
-"""Reglas y keywords. Escalable a ML/NLP después."""
+"""Reglas y keywords. Fechas/horas naturales (mañana, 8 am), confirmación sí/no."""
 
 import re
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 # Intenciones soportadas
 INTENT_SALUDO = "saludo"
 INTENT_BUSCAR_PROPIEDAD = "buscar_propiedad"
+INTENT_COMPARAR_OPCIONES = "comparar_opciones"
+INTENT_PEDIR_RECOMENDACION = "pedir_recomendacion"
 INTENT_PEDIR_INFORMACION = "pedir_informacion"
 INTENT_AGENDAR_CITA = "agendar_cita"
 INTENT_DUDA_GENERAL = "duda_general"
@@ -133,6 +136,10 @@ def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
         return INTENT_DESPEDIDA
     if _match_keywords(t, KEYWORDS_AGENDAR) or "agendar" in t or "visita" in t or "cita" in t:
         return INTENT_AGENDAR_CITA
+    if any(w in t for w in ["comparar", "comparación", "comparar opciones", "diferencias entre", "cuál es mejor"]):
+        return INTENT_COMPARAR_OPCIONES
+    if any(w in t for w in ["recomienda", "recomendación", "qué me recomiendas", "sugiere", "qué me sugieres", "recomiéndame"]):
+        return INTENT_PEDIR_RECOMENDACION
     if _match_keywords(t, KEYWORDS_BUSCAR) or _has_search_criteria(texto):
         return INTENT_BUSCAR_PROPIEDAD
     if _match_keywords(t, KEYWORDS_INFO):
@@ -282,7 +289,7 @@ def extract_email(texto: str) -> Optional[str]:
 
 
 def extract_fecha(texto: str) -> Optional[str]:
-    """YYYY-MM-DD si detecta fecha en texto."""
+    """YYYY-MM-DD si detecta fecha en texto (ISO, dd/mm/yyyy o natural: mañana, hoy)."""
     # ISO
     m = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", texto or "")
     if m:
@@ -292,14 +299,81 @@ def extract_fecha(texto: str) -> Optional[str]:
     if m:
         d, mo, y = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
         return f"{y}-{mo}-{d}"
+    # Natural: mañana, pasado mañana, hoy
+    return extract_fecha_natural(texto)
+
+
+def extract_fecha_natural(texto: str) -> Optional[str]:
+    """Convierte 'mañana', 'pasado mañana', 'hoy' a YYYY-MM-DD."""
+    if not texto or not texto.strip():
+        return None
+    t = _normalize(texto)
+    hoy = date.today()
+    if "manana" in t or "mañana" in t:
+        return (hoy + timedelta(days=1)).strftime("%Y-%m-%d")
+    if "pasado manana" in t or "pasado mañana" in t:
+        return (hoy + timedelta(days=2)).strftime("%Y-%m-%d")
+    if "hoy" in t:
+        return hoy.strftime("%Y-%m-%d")
     return None
 
 
 def extract_hora(texto: str) -> Optional[str]:
-    """HH:MM o HH:MM:SS."""
+    """HH:MM (formato 8:00 o natural: 8 am, 8 de la mañana)."""
+    # HH:MM o HH:MM:SS
     m = re.search(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b", texto or "")
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
         if 0 <= h <= 23 and 0 <= mi <= 59:
             return f"{h:02d}:{mi:02d}"
+    # Natural: 8 am, 8:00 am, 8 de la mañana, 9 pm
+    return extract_hora_natural(texto)
+
+
+def extract_hora_natural(texto: str) -> Optional[str]:
+    """Extrae hora de '8 am', '8:00 am', '9 pm', '8 de la mañana'."""
+    if not texto or not texto.strip():
+        return None
+    t = _normalize(texto)
+    # Número + am/pm o "de la mañana/tarde/noche"
+    m = re.search(r"\b(\d{1,2})\s*(?::(\d{2}))?\s*(?:am|pm|a\.m\.|p\.m\.|de la mañana|de la tarde|de la noche)\b", t)
+    if m:
+        h = int(m.group(1))
+        mi = int(m.group(2)) if m.group(2) else 0
+        if "pm" in t or "p.m" in t or "tarde" in t or "noche" in t:
+            if h < 12:
+                h += 12
+        else:
+            if h == 12:
+                h = 0
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return f"{h:02d}:{mi:02d}"
+    # Solo número cuando el contexto es cita/visita (ej. "a las 8")
+    if "cita" in t or "visita" in t or "hora" in t or "las " in t:
+        m = re.search(r"\b(\d{1,2})\s*(?::(\d{2}))?\s*$", t)
+        if not m:
+            m = re.search(r"(?:a las|las|a la)\s*(\d{1,2})\s*(?::(\d{2}))?", t)
+        if m:
+            h = int(m.group(1))
+            mi = int(m.group(2)) if m.group(2) else 0
+            if h <= 23 and 0 <= mi <= 59:
+                return f"{h:02d}:{mi:02d}"
+    return None
+
+
+def extract_confirmacion(texto: str) -> Optional[bool]:
+    """True = sí/claro/ok, False = no/cancelar. None = no está confirmando."""
+    if not texto or not texto.strip():
+        return None
+    t = _normalize(texto)
+    if len(t) > 80:
+        return None
+    positivos = ["si", "sí", "claro", "dale", "ok", "vale", "perfecto", "yes", "por favor", "adelante", "bueno", "de acuerdo"]
+    negativos = ["no", "cancelar", "mejor no", "no quiero", "nope"]
+    for w in positivos:
+        if w in t or t.strip() == w:
+            return True
+    for w in negativos:
+        if w in t or t.strip() == w:
+            return False
     return None
