@@ -1,6 +1,6 @@
 # Cómo actualizar el proyecto en GitHub (sin romper Railway)
 
-Railway está conectado a tu repo **Santiagodiaz04/chatbot-api**. Cada vez que hagas **push** a la rama **principal**, Railway hará un nuevo deploy. Eso **no rompe** la conexión; es la forma correcta de actualizar.
+Railway está conectado a tu repo **Santiagodiaz04/chatbot-api**. Cada vez que hagas **push** a la rama **main**, Railway hará un nuevo deploy. Eso **no rompe** la conexión; es la forma correcta de actualizar.
 
 ---
 
@@ -15,7 +15,7 @@ Si en algún momento clonaste el repo (por ejemplo en otra carpeta):
    git status
    git add .
    git commit -m "Fix CORS y mejoras"
-   git push origin principal
+   git push origin main
    ```
 4. En GitHub verás el nuevo commit. Railway detectará el push y hará un **nuevo deploy** automáticamente.
 
@@ -35,18 +35,18 @@ Si tu carpeta `chatbot-api` **no** está conectada a GitHub (no hiciste `git clo
    ```bash
    git init
    git remote add origin https://github.com/Santiagodiaz04/chatbot-api.git
-   git branch -M principal
+   git branch -M main
    ```
 3. Trae el contenido actual del repo (por si hay algo que no tienes local):
    ```bash
-   git pull origin principal --allow-unrelated-histories
+   git pull origin main --allow-unrelated-histories
    ```
    Si pide merge, acepta. Si hay conflictos, avisa.
 4. Añade todo, haz commit y sube:
    ```bash
    git add .
    git commit -m "Actualizar API: CORS y mejoras"
-   git push -u origin principal
+   git push -u origin main
    ```
 
 ### B) O: Clonar el repo en otra carpeta y copiar archivos
@@ -62,7 +62,7 @@ Si tu carpeta `chatbot-api` **no** está conectada a GitHub (no hiciste `git clo
    ```bash
    git add .
    git commit -m "Actualizar API: CORS y mejoras"
-   git push origin principal
+   git push origin main
    ```
 
 ---
@@ -70,7 +70,7 @@ Si tu carpeta `chatbot-api` **no** está conectada a GitHub (no hiciste `git clo
 ## Qué no hacer
 
 - **No borres** el repo en GitHub.
-- **No cambies** el nombre del repo ni la rama que Railway usa (normalmente **principal** o **main**).
+- **No cambies** el nombre del repo ni la rama que Railway usa (**main**).
 - **No quites** la conexión del proyecto en Railway con GitHub.
 - **No subas** el archivo `.env` (debe estar en .gitignore); en Railway se configuran las variables en la web.
 

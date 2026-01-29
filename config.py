@@ -21,3 +21,7 @@ PORT = int(os.getenv("PORT", "8000"))
 
 CORS_ORIGINS_STR = os.getenv("CORS_ORIGINS", "http://localhost,http://127.0.0.1")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_STR.split(",") if o.strip()]
+
+# IA generativa (opcional, gratis con Gemini)
+LLM_ENABLED = os.getenv("LLM_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()

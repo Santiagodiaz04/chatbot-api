@@ -35,6 +35,9 @@ KEYWORDS_INFO = [
     "cuentame", "cómo", "como", "qué", "que", "donde", "dónde",
     "horario", "horarios", "ubicación", "ubicacion", "contacto", "teléfono",
     "telefono", "financiación", "financiacion", "cuotas", "requisitos",
+    "garaje", "garage", "parqueadero", "servicios incluidos", "incluye",
+    "características", "caracteristicas", "requisitos", "documentos",
+    "lotes", "lote", "renta", "arriendo",
 ]
 KEYWORDS_DESPEDIDA = [
     "gracias", "chao", "adiós", "adios", "hasta luego", "bye", "nos vemos",
@@ -72,10 +75,22 @@ def _match_keywords(texto: str, keywords: List[str]) -> bool:
     return False
 
 
+def _has_search_criteria(texto: str) -> bool:
+    """True si el mensaje incluye criterios de búsqueda (casa, habitaciones, presupuesto, etc.)."""
+    t = _normalize(texto)
+    criterios = [
+        "casa", "apartamento", "aparto", "lote", "venta", "renta", "arriendo",
+        "habitacion", "alcoba", "cuarto", "presupuesto", "precio", "comprar",
+        "busco", "buscar", "propiedad", "proyecto", "millon", "millones",
+    ]
+    return any(c in t for c in criterios) or bool(RE_NUMERO.search(texto)) or bool(RE_TIPO.search(texto))
+
+
 def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
     """
     Detecta intención predominante.
-    contexto: { "esperando": "nombre"|"telefono"|"fecha"|"hora"|None, "tipo_ref", "ref_id", ... }
+    contexto: { "esperando": "nombre"|"email"|"telefono"|"fecha"|"hora"|None, "tipo_ref", "ref_id", ... }
+    Prioridad: si hay saludo + criterios de búsqueda -> buscar_propiedad (contexto de conversación).
     """
     t = _normalize(texto)
     if not t or len(t) < 2:
@@ -86,6 +101,8 @@ def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
 
     if esperando == "nombre":
         return INTENT_CONFIRMAR_DATOS
+    if esperando == "email":
+        return INTENT_CONFIRMAR_DATOS
     if esperando == "telefono":
         return INTENT_CONFIRMAR_DATOS
     if esperando == "fecha":
@@ -93,20 +110,24 @@ def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
     if esperando == "hora":
         return INTENT_AGENDAR_CITA
 
+    # Si dice "hola" pero también pide algo concreto (casa 3 hab, comprar, presupuesto) -> búsqueda
+    if _match_keywords(t, KEYWORDS_SALUDO) and _has_search_criteria(texto):
+        return INTENT_BUSCAR_PROPIEDAD
     if _match_keywords(t, KEYWORDS_SALUDO) and len(t) < 60:
         return INTENT_SALUDO
+
     if _match_keywords(t, KEYWORDS_DESPEDIDA):
         return INTENT_DESPEDIDA
     if _match_keywords(t, KEYWORDS_AGENDAR) or "agendar" in t or "visita" in t or "cita" in t:
         return INTENT_AGENDAR_CITA
-    if _match_keywords(t, KEYWORDS_BUSCAR):
+    if _match_keywords(t, KEYWORDS_BUSCAR) or _has_search_criteria(texto):
         return INTENT_BUSCAR_PROPIEDAD
     if _match_keywords(t, KEYWORDS_INFO):
         return INTENT_PEDIR_INFORMACION
 
-    # Preguntas cortas tipo "¿tienen X?" -> info o búsqueda
+    # Preguntas tipo "¿tienen X?" -> info o búsqueda
     if "tienen" in t or "hay" in t:
-        return INTENT_BUSCAR_PROPIEDAD if any(w in t for w in ["propiedad", "casa", "aparto", "proyecto", "venta", "renta"]) else INTENT_PEDIR_INFORMACION
+        return INTENT_BUSCAR_PROPIEDAD if any(w in t for w in ["propiedad", "casa", "aparto", "proyecto", "venta", "renta", "lote"]) else INTENT_PEDIR_INFORMACION
 
     return INTENT_DUDA_GENERAL
 
@@ -179,15 +200,27 @@ def extract_entities(texto: str) -> Dict[str, Any]:
                     else:
                         out["presupuesto_min"] = out["presupuesto_min"] or v * 1_000_000
                     break
-    # Palabras sueltas
-    if "millon" in t or "millones" in t:
-        for n in re.finditer(r"\b(\d{1,3}(?:[.,]\d+)?)\s*(?:millones?|m\b)?", t):
-            v = _parse_millions(n.group(1))
-            if v and v > 0:
-                val = v * 1_000_000
+    # Palabras sueltas: presupuesto / millones (ej. "tengo presupuesto de 350.000.000" -> tope máximo)
+    if "millon" in t or "millones" in t or "presupuesto" in t or "precio" in t:
+        for n in re.finditer(r"\b(\d{1,3}(?:[.,]\d+)?(?:\s*[.,]\s*\d{3})*)\s*(?:millones?|m\b)?", t):
+            raw = n.group(1)
+            digits_only = re.sub(r"\D", "", raw)
+            # Formato colombiano 350.000.000 = 350 millones pesos
+            if len(digits_only) >= 6:
+                try:
+                    val = float(digits_only)
+                except Exception:
+                    val = None
+            else:
+                v = _parse_millions(raw)
+                val = (v * 1_000_000) if v and v > 0 else None
+            if val and val > 0:
+                # "presupuesto de X" / "tengo presupuesto X" = tope máximo (no mostrar más caro)
+                if "presupuesto" in t or ("tengo" in t and ("millon" in t or "millones" in t or len(digits_only) >= 6)):
+                    out["presupuesto_max"] = val
                 if out["presupuesto_max"] is None:
                     out["presupuesto_max"] = val
-                if out["presupuesto_min"] is None:
+                if out["presupuesto_min"] is None and "presupuesto" not in t:
                     out["presupuesto_min"] = val
                 break
 
@@ -222,6 +255,16 @@ def extract_telefono(texto: str) -> Optional[str]:
     digits = re.sub(r"\D", "", (texto or ""))
     if 7 <= len(digits) <= 15:
         return digits
+    return None
+
+
+def extract_email(texto: str) -> Optional[str]:
+    """Extrae email si aparece en el texto."""
+    t = (texto or "").strip()
+    # Patrón básico de email
+    m = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", t)
+    if m:
+        return m.group(0).strip()
     return None
 
 

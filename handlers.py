@@ -25,8 +25,14 @@ from nlu import (
     extract_hora,
     extract_nombre,
     extract_telefono,
+    extract_email,
 )
 from php_client import horarios_disponibles, procesar_cita
+
+try:
+    from llm_client import generate_reply as llm_generate_reply
+except ImportError:
+    llm_generate_reply = None
 
 
 def _cfg(key: str, default: str = "") -> str:
@@ -50,7 +56,7 @@ def _url_proyecto(slug: str, base: str) -> str:
 
 
 def handle_saludo(conversacion_id: Optional[str], base_url: str) -> Dict[str, Any]:
-    msg = _cfg("saludo_inicial", "¡Hola! 🙂 Soy el asistente de CTR Bienes Raíces. ¿En qué puedo ayudarte? Puedo mostrarte propiedades, proyectos o agendar una visita.")
+    msg = _cfg("saludo_inicial", "Hola, soy el asistente de CTR Bienes Raíces. Puedo mostrarte casas, apartamentos, lotes o en renta, y agendar visitas. ¿Qué buscas?")
     return {"text": msg, "actions": [], "context": {}}
 
 
@@ -68,6 +74,7 @@ def handle_buscar_propiedad(
     ent = extract_entities(texto)
     tipo = ent.get("tipo") or contexto.get("tipo")
     precio_min = ent.get("presupuesto_min") or contexto.get("presupuesto_min")
+    # Presupuesto máximo: respetar estrictamente (nunca mostrar más caro que lo indicado)
     precio_max = ent.get("presupuesto_max") or contexto.get("presupuesto_max")
     habitaciones = ent.get("habitaciones") if ent.get("habitaciones") is not None else contexto.get("habitaciones")
     ubicacion = (ent.get("ubicacion") or "").strip() or (contexto.get("ubicacion") or "").strip()
@@ -82,15 +89,18 @@ def handle_buscar_propiedad(
     )
     proyectos = buscar_proyectos(ubicacion=ubicacion if ubicacion else None, limite=3)
 
-    sale_msg = _cfg("mensaje_venta_propiedades", "Tenemos opciones que podrían encantarte 🏡✨ ¿Te gustaría ver más detalles o agendar una visita?")
-    urge_msg = _cfg("mensaje_urgencia", "Hay pocas disponibles con esas características. Te recomiendo agendar una visita pronto.")
-    agenda_msg = _cfg("mensaje_agendar_cita", "¿Te gustaría agendar una visita? 📅 Solo necesito tu nombre y teléfono para confirmar.")
+    sale_msg = _cfg("mensaje_venta_propiedades", "Estas opciones podrían interesarte. ¿Quieres ver más detalles o agendar una visita?")
+    urge_msg = _cfg("mensaje_urgencia", "Hay pocas con esas características; te conviene agendar pronto.")
+    agenda_msg = _cfg("mensaje_agendar_cita", "¿Quieres agendar una visita? Te pido nombre, correo y teléfono para confirmar.")
 
     lines: List[str] = []
     cards: List[Dict[str, Any]] = []
 
     if props:
-        lines.append(f"¡Perfecto 😊! Encontré **{len(props)}** propiedad(es) que podrían interesarte.")
+        if precio_max:
+            lines.append(f"Encontré **{len(props)}** opción(es) dentro de tu presupuesto.")
+        else:
+            lines.append(f"Encontré **{len(props)}** propiedad(es) que encajan con lo que buscas.")
         for p in props[:4]:
             cards.append({
                 "type": "propiedad",
@@ -108,21 +118,31 @@ def handle_buscar_propiedad(
         lines.append(sale_msg)
         lines.append(agenda_msg)
     elif proyectos:
-        lines.append(f"En proyectos encontré **{len(proyectos)}** opción(es) 🏗️")
-        for pr in proyectos[:3]:
-            cards.append({
-                "type": "proyecto",
-                "id": pr["id"],
-                "titulo": pr["nombre"],
-                "ubicacion": pr.get("ubicacion") or "",
-                "precio_desde": _format_precio(float(pr["precio_desde"])) if pr.get("precio_desde") else "",
-                "url": _url_proyecto(pr["slug"], base_url),
-                "imagen": f"{base_url.rstrip('/')}/uploads/proyectos/{pr['imagen_principal']}" if pr.get("imagen_principal") else None,
-            })
-        lines.append(sale_msg)
-        lines.append(agenda_msg)
+        # Respetar presupuesto: no mostrar proyectos por encima del tope
+        if precio_max is not None:
+            proyectos = [pr for pr in proyectos if (pr.get("precio_desde") or 0) <= precio_max]
+        if proyectos:
+            lines.append(f"En proyectos encontré **{len(proyectos)}** opción(es).")
+            for pr in proyectos[:3]:
+                cards.append({
+                    "type": "proyecto",
+                    "id": pr["id"],
+                    "titulo": pr["nombre"],
+                    "ubicacion": pr.get("ubicacion") or "",
+                    "precio_desde": _format_precio(float(pr["precio_desde"])) if pr.get("precio_desde") else "",
+                    "url": _url_proyecto(pr["slug"], base_url),
+                    "imagen": f"{base_url.rstrip('/')}/uploads/proyectos/{pr['imagen_principal']}" if pr.get("imagen_principal") else None,
+                })
+            lines.append(sale_msg)
+            lines.append(agenda_msg)
+        else:
+            lines.append("No encontré proyectos dentro de ese presupuesto. ¿Ajustamos el rango o prefieres que te muestre propiedades?")
+            lines.append(agenda_msg)
     else:
-        lines.append("No encontré propiedades que coincidan exactamente. ¿Quieres que ajustemos el filtro (presupuesto, habitaciones, zona) o prefieres que te muestre opciones generales?")
+        if precio_max:
+            lines.append(f"No encontré propiedades dentro de ese presupuesto. ¿Ajustamos el rango o te muestro opciones un poco más altas? También puedo agendar una visita para que un asesor te ayude.")
+        else:
+            lines.append("No encontré propiedades con esos criterios. ¿Ajustamos filtros (presupuesto, habitaciones, zona) o prefieres que te muestre opciones generales?")
         lines.append(agenda_msg)
 
     ctx = {
@@ -147,7 +167,13 @@ def handle_pedir_informacion(
         log_pregunta(conversacion_id, texto, "pedir_informacion", r["id"])
         return {"text": msg, "actions": [], "context": {}}
 
-    msg = "Puedo ayudarte con información sobre propiedades, proyectos, horarios o agendar visitas. ¿Qué te gustaría saber? 🙂"
+    t = (texto or "").lower()
+    # Preguntas sobre detalles (garaje, servicios, requisitos, lotes): respuesta natural si no hay FAQ
+    if any(w in t for w in ["garaje", "garage", "parqueadero", "servicios incluidos", "incluye", "requisitos", "documentos", "lote", "lotes"]):
+        msg = "Ese detalle no lo tengo a mano aquí, pero un asesor te puede dar toda la información. ¿Quieres que te muestre opciones disponibles o prefieres agendar una visita?"
+        return {"text": msg, "actions": [], "context": {}}
+
+    msg = "Puedo ayudarte con propiedades (venta, renta, lotes), proyectos, horarios o agendar visitas. ¿Qué te gustaría saber?"
     return {"text": msg, "actions": [], "context": {}}
 
 
@@ -159,8 +185,8 @@ def handle_agendar_cita(
 ) -> Dict[str, Any]:
     esperando = contexto.get("esperando")
     nombre = contexto.get("nombre") or extract_nombre(texto)
+    email = contexto.get("email") or extract_email(texto)
     telefono = contexto.get("telefono") or extract_telefono(texto)
-    email = contexto.get("email")
     tipo_ref = contexto.get("tipo_referencia")
     ref_id = contexto.get("referencia_id")
     fecha = contexto.get("fecha_cita") or extract_fecha(texto)
@@ -168,8 +194,15 @@ def handle_agendar_cita(
 
     if esperando == "nombre" and nombre:
         contexto["nombre"] = nombre
-        contexto["esperando"] = "telefono"
-        return {"text": "Gracias 🙂 ¿En qué número te contacto? (celular)", "actions": [], "context": contexto}
+        contexto["esperando"] = "email"
+        return {"text": "Gracias. ¿Cuál es tu correo electrónico? (para enviarte la confirmación)", "actions": [], "context": contexto}
+    if esperando == "email":
+        em = extract_email(texto) or (texto.strip() if "@" in texto else None)
+        if em:
+            contexto["email"] = em
+            contexto["esperando"] = "telefono"
+            return {"text": "Perfecto. ¿En qué número te contacto? (celular)", "actions": [], "context": contexto}
+        return {"text": "Por favor escribe tu correo (ej. nombre@correo.com) para enviarte la confirmación de la cita.", "actions": [], "context": contexto}
     if esperando == "telefono":
         tel = extract_telefono(texto)
         if tel:
@@ -184,18 +217,24 @@ def handle_agendar_cita(
             # Sin referencia: pedir que elija de las opciones o agendar “visita general”
             contexto["esperando"] = "fecha"
             return {"text": "¿Qué fecha te gustaría? (formato: AAAA-MM-DD)", "actions": [], "context": contexto}
-        return {"text": "Por favor escribe tu número de celular (ej. 3001234567).", "actions": [], "context": contexto}
+        return {"text": "Escribe tu número de celular (ej. 3001234567) para confirmar la visita.", "actions": [], "context": contexto}
 
     if not nombre:
         contexto["esperando"] = "nombre"
-        return {"text": _cfg("mensaje_agendar_cita", "¿Te gustaría agendar una visita? 📅 Solo necesito tu nombre y teléfono para confirmar.") + "\n\n¿Cuál es tu nombre?", "actions": [], "context": contexto}
+        return {"text": _cfg("mensaje_agendar_cita", "Para agendar la visita necesito algunos datos. ¿Cuál es tu nombre?") + "\n\n(Después te pediré correo y teléfono para la confirmación.)", "actions": [], "context": contexto}
+    if not email:
+        contexto["nombre"] = nombre
+        contexto["esperando"] = "email"
+        return {"text": "¿Cuál es tu correo? Así te enviamos la confirmación de la cita.", "actions": [], "context": contexto}
     if not telefono:
         contexto["nombre"] = nombre
+        contexto["email"] = email
         contexto["esperando"] = "telefono"
         return {"text": "¿En qué número te contacto? (celular)", "actions": [], "context": contexto}
 
     if not fecha:
         contexto["nombre"] = nombre
+        contexto["email"] = email
         contexto["telefono"] = telefono
         contexto["esperando"] = "fecha"
         return {"text": "¿Qué fecha te queda bien? (formato: AAAA-MM-DD)", "actions": [], "context": contexto}
@@ -256,8 +295,10 @@ def handle_duda_general(texto: str, conversacion_id: Optional[str], base_url: st
         msg = faqs[0]["respuesta"]
         log_pregunta(conversacion_id, texto, "duda_general", faqs[0]["id"])
         return {"text": msg, "actions": [], "context": {}}
-    msg = "¿En qué puedo ayudarte? Puedo mostrarte propiedades, proyectos o agendar una visita 📅"
-    return {"text": msg, "actions": [], "context": {}}
+    t = (texto or "").lower()
+    if any(w in t for w in ["garaje", "garage", "servicios", "requisitos", "lote", "lotes", "renta", "arriendo"]):
+        return {"text": "Ese dato no lo tengo aquí; un asesor te puede contar todo. ¿Te muestro opciones o agendamos una visita?", "actions": [], "context": {}}
+    return {"text": "¿En qué te ayudo? Puedo mostrarte propiedades (venta, renta, lotes), proyectos o agendar una visita.", "actions": [], "context": {}}
 
 
 def handle_confirmar_datos(
@@ -289,5 +330,15 @@ def dispatch(
     out = h()
     if "context" not in out:
         out["context"] = {}
+
+    # IA opcional: humanizar el texto (cards, actions y context no cambian)
+    if llm_generate_reply and out.get("text"):
+        try:
+            natural = llm_generate_reply(texto, out["text"], intent)
+            if natural:
+                out["text"] = natural
+        except Exception:
+            pass
+
     out["intent"] = intent
     return out
