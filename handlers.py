@@ -10,6 +10,7 @@ from db import (
     buscar_propiedades,
     buscar_proyectos,
     config_get,
+    entrenamiento_match,
     faq_match,
     get_propiedad_by_id,
     log_pregunta,
@@ -641,6 +642,11 @@ def dispatch(
     out = h()
     if "context" not in out:
         out["context"] = {}
+
+    # Aprendizaje supervisado: si hay un ejemplo aprobado (correcta/corregida) para input+intención, usarlo
+    ej = entrenamiento_match(texto, intent)
+    if ej and (ej.get("respuesta") or "").strip():
+        out["text"] = ej["respuesta"].strip()
 
     # Célula inteligente (Gemini): genera la respuesta desde datos de la BD; si falla, se usa el borrador
     if llm_generate_reply and out.get("text"):

@@ -13,7 +13,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from config import CORS_ORIGINS, DB_PASS, GEMINI_API_KEY, LLM_ENABLED, PHP_BASE_URL
-from db import crear_conversacion, get_conn, guardar_mensaje
+from db import (
+    actualizar_entrenamiento_evaluacion,
+    crear_conversacion,
+    get_conn,
+    guardar_entrenamiento_turno,
+    guardar_mensaje,
+    listar_entrenamiento,
+)
 from handlers import dispatch
 
 logger = logging.getLogger("chatbot-api")
@@ -105,6 +112,7 @@ class ChatResponse(BaseModel):
     session_id: str
     intent: Optional[str] = None
     llm_used: Optional[bool] = None  # True si la respuesta fue humanizada con Gemini
+    entrenamiento_id: Optional[int] = None  # Solo cuando origen=admin (panel de entrenamiento)
 
 
 @app.get("/health")
@@ -196,9 +204,10 @@ def chat(req: ChatRequest):
         contexto["tipo_referencia"] = req.referencia_tipo
         contexto["referencia_id"] = req.referencia_id
 
+    es_admin = (contexto.get("origen") or "").strip().lower() == "admin"
     try:
         if not session_id:
-            session_id = crear_conversacion(origen="web")
+            session_id = crear_conversacion(origen="admin" if es_admin else "web")
     except Exception as e:
         logger.exception("Error creando conversación (BD no accesible?): %s", e)
         session_id = str(uuid.uuid4()).replace("-", "")[:32]
@@ -222,6 +231,20 @@ def chat(req: ChatRequest):
     except Exception:
         pass
 
+    entrenamiento_id = None
+    if es_admin:
+        try:
+            entrenamiento_id = guardar_entrenamiento_turno(
+                conversacion_id=session_id,
+                origen="admin",
+                input_usuario=msg,
+                respuesta_chatbot=text,
+                intencion=intent,
+                contexto_json=ctx,
+            )
+        except Exception as e:
+            logger.exception("Error guardando turno de entrenamiento: %s", e)
+
     return ChatResponse(
         text=text,
         actions=actions,
@@ -230,4 +253,36 @@ def chat(req: ChatRequest):
         session_id=session_id,
         intent=intent,
         llm_used=out.get("llm_used"),
+        entrenamiento_id=entrenamiento_id,
     )
+
+
+# --- Entrenamiento supervisado (panel admin) ---
+
+class EvaluarRequest(BaseModel):
+    entrenamiento_id: int = Field(..., ge=1)
+    estado_aprobacion: str = Field(..., pattern="^(correcta|incorrecta|mejorable|corregida)$")
+    respuesta_corregida: Optional[str] = Field(None, max_length=8000)
+
+
+@app.post("/entrenamiento/evaluar")
+def entrenamiento_evaluar(req: EvaluarRequest):
+    """
+    Evalúa un turno guardado: correcta, incorrecta, mejorable o corregida.
+    Solo correcta y corregida se usan para mejorar el comportamiento del chatbot.
+    """
+    ok = actualizar_entrenamiento_evaluacion(
+        entrenamiento_id=req.entrenamiento_id,
+        estado_aprobacion=req.estado_aprobacion,
+        respuesta_corregida=req.respuesta_corregida,
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Registro no encontrado o estado inválido")
+    return {"ok": True, "entrenamiento_id": req.entrenamiento_id, "estado": req.estado_aprobacion}
+
+
+@app.get("/entrenamiento")
+def entrenamiento_listar(limite: int = 50, estado: Optional[str] = None, intencion: Optional[str] = None):
+    """Lista registros de entrenamiento para el panel admin (filtros opcionales)."""
+    items = listar_entrenamiento(limite=min(limite, 200), estado=estado, intencion=intencion)
+    return {"items": items, "total": len(items)}

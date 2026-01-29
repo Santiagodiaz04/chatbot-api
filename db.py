@@ -241,3 +241,145 @@ def log_pregunta(
             """,
             (conversacion_id, texto_usuario[:2000], intent_detectado, faq_id),
         )
+
+
+# --- Entrenamiento supervisado (panel admin) ---
+
+def guardar_entrenamiento_turno(
+    conversacion_id: Optional[str],
+    origen: str,
+    input_usuario: str,
+    respuesta_chatbot: str,
+    intencion: Optional[str] = None,
+    contexto_json: Optional[dict] = None,
+) -> int:
+    """
+    Guarda un turno de conversación para entrenamiento (origen=admin).
+    Devuelve el id del registro creado.
+    """
+    import json
+    ctx_str = json.dumps(contexto_json) if contexto_json else None
+    with cursor_dict() as cur:
+        cur.execute(
+            """
+            INSERT INTO chatbot_entrenamiento
+            (conversacion_id, origen, input_usuario, respuesta_chatbot, intencion, contexto_json, estado_aprobacion)
+            VALUES (%s, %s, %s, %s, %s, %s, 'pendiente')
+            """,
+            (
+                conversacion_id,
+                origen[:20] if origen else "admin",
+                (input_usuario or "")[:4000],
+                (respuesta_chatbot or "")[:8000],
+                (intencion or "")[:80] if intencion else None,
+                ctx_str,
+            ),
+        )
+        cur.execute("SELECT LAST_INSERT_ID() AS id")
+        row = cur.fetchone()
+        return int(row["id"]) if row and row.get("id") else 0
+
+
+def actualizar_entrenamiento_evaluacion(
+    entrenamiento_id: int,
+    estado_aprobacion: str,
+    respuesta_corregida: Optional[str] = None,
+) -> bool:
+    """
+    Actualiza la evaluación de un turno (correcta, incorrecta, mejorable, corregida).
+    Solo correcta y corregida se usan para mejorar el comportamiento.
+    """
+    allowed = ("pendiente", "correcta", "incorrecta", "mejorable", "corregida")
+    if estado_aprobacion not in allowed:
+        return False
+    with cursor_dict() as cur:
+        if respuesta_corregida is not None:
+            cur.execute(
+                """
+                UPDATE chatbot_entrenamiento
+                SET estado_aprobacion = %s, respuesta_corregida = %s
+                WHERE id = %s
+                """,
+                (estado_aprobacion, (respuesta_corregida or "")[:8000], entrenamiento_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE chatbot_entrenamiento
+                SET estado_aprobacion = %s
+                WHERE id = %s
+                """,
+                (estado_aprobacion, entrenamiento_id),
+            )
+        return cur.rowcount > 0
+
+
+def entrenamiento_match(texto: str, intencion: Optional[str], limite: int = 3) -> Optional[dict]:
+    """
+    Busca un ejemplo aprobado (correcta o corregida) similar al input e intención.
+    Se usa para mejorar respuestas: si hay coincidencia, se devuelve la respuesta
+    humana (corregida o la original aprobada). No se reutilizan respuestas incorrectas.
+    """
+    texto = (texto or "").strip().lower()
+    if len(texto) < 2:
+        return None
+    words = [w.strip() for w in texto.split() if len(w.strip()) >= 2]
+    if not words:
+        return None
+
+    with cursor_dict() as cur:
+        cur.execute(
+            """
+            SELECT id, input_usuario, respuesta_chatbot, respuesta_corregida, intencion
+            FROM chatbot_entrenamiento
+            WHERE estado_aprobacion IN ('correcta', 'corregida')
+            ORDER BY fecha_actualizacion DESC
+            LIMIT 200
+            """,
+        )
+        rows = cur.fetchall()
+
+    scored = []
+    for r in rows:
+        q = (r.get("input_usuario") or "").lower()
+        intent_ok = (intencion and r.get("intencion") == intencion) or (not intencion)
+        if not intent_ok:
+            continue
+        combined = q
+        score = sum(1 for w in words if w in combined)
+        if score > 0:
+            respuesta = (r.get("respuesta_corregida") or "").strip() or (r.get("respuesta_chatbot") or "").strip()
+            if respuesta:
+                scored.append((score, {**r, "respuesta": respuesta}))
+    scored.sort(key=lambda x: -x[0])
+    if not scored:
+        return None
+    best = scored[0][1]
+    return {"respuesta": best.get("respuesta"), "id": best.get("id")}
+
+
+def listar_entrenamiento(
+    limite: int = 50,
+    estado: Optional[str] = None,
+    intencion: Optional[str] = None,
+) -> List[dict]:
+    """Lista registros de entrenamiento para el panel admin."""
+    q = """
+        SELECT id, conversacion_id, origen, input_usuario, respuesta_chatbot,
+               respuesta_corregida, intencion, estado_aprobacion,
+               fecha_creacion, fecha_actualizacion
+        FROM chatbot_entrenamiento
+        WHERE 1=1
+        """
+    params: List[Any] = []
+    if estado:
+        q += " AND estado_aprobacion = %s"
+        params.append(estado)
+    if intencion:
+        q += " AND intencion = %s"
+        params.append(intencion)
+    q += " ORDER BY fecha_creacion DESC LIMIT %s"
+    params.append(limite)
+    with cursor_dict() as cur:
+        cur.execute(q, params)
+        return cur.fetchall()
