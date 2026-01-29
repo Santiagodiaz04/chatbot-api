@@ -1,5 +1,11 @@
 # db.py - Conexión MySQL para API Chatbot CTR
-"""Acceso a BD. Usa tablas: propiedades, proyectos, citas, agentes, chatbot_*."""
+"""
+Acceso a BD. Usa tablas: propiedades, proyectos, citas, agentes, chatbot_*.
+
+Importante: cada petición al chat consulta la BD en vivo; no hay caché.
+Cuando agregues o actualices una casa/proyecto en la BD, el bot la verá en la
+siguiente consulta (si está activo=1 y estado='disponible' en propiedades).
+"""
 
 import uuid
 from contextlib import contextmanager
@@ -96,7 +102,8 @@ def buscar_propiedades(
     limite: int = 6,
 ) -> List[dict]:
     """
-    Filtrar propiedades activas y disponibles.
+    Filtrar propiedades activas y disponibles. Consulta la BD en vivo (sin caché):
+    cualquier casa nueva con activo=1 y estado='disponible' aparece de inmediato.
     tipo: venta | renta | lote
     ubicacion/titulo: búsqueda por ubicación o por nombre (titulo) de la propiedad.
     exclude_ids: excluir estos IDs (para "qué otra tienes").
@@ -161,7 +168,11 @@ def buscar_proyectos(
     ubicacion: Optional[str] = None,
     limite: int = 6,
 ) -> List[dict]:
-    """Proyectos activos. Opcional filtro por ubicación."""
+    """
+    Proyectos activos. Consulta la BD en vivo (sin caché):
+    proyectos nuevos con activo=1 aparecen de inmediato en el bot.
+    Opcional filtro por ubicación.
+    """
     q = """
         SELECT id, nombre, slug, ubicacion, precio_desde, imagen_principal, descripcion
         FROM proyectos

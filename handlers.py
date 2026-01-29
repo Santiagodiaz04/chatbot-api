@@ -642,10 +642,12 @@ def dispatch(
     if "context" not in out:
         out["context"] = {}
 
-    # Célula inteligente (IA): procesa respuesta con contexto de datos, conversación y prompt del admin
+    # Célula inteligente (Gemini): genera la respuesta desde datos de la BD; si falla, se usa el borrador
     if llm_generate_reply and out.get("text"):
         try:
             data_ctx = build_data_context(out.get("cards")) if build_data_context else None
+            if not (data_ctx or "").strip():
+                data_ctx = f"Contexto: {out['text'][:500]}"
             last_user = (contexto.get("last_user_message") or "").strip() or None
             last_bot = (contexto.get("last_bot_message") or "").strip() or None
             system_prompt = _cfg("prompt_sistema") or _cfg("instrucciones_ia") or None
