@@ -90,12 +90,14 @@ def buscar_propiedades(
     precio_max: Optional[float] = None,
     habitaciones: Optional[int] = None,
     ubicacion: Optional[str] = None,
+    titulo: Optional[str] = None,
     proyecto_id: Optional[int] = None,
     limite: int = 6,
 ) -> List[dict]:
     """
     Filtrar propiedades activas y disponibles.
     tipo: venta | renta | lote
+    ubicacion/titulo: búsqueda por ubicación o por nombre (titulo) de la propiedad.
     """
     q = """
         SELECT id, titulo, slug, tipo, ubicacion, precio, habitaciones, banos,
@@ -116,9 +118,16 @@ def buscar_propiedades(
     if habitaciones is not None:
         q += " AND habitaciones >= %s"
         params.append(habitaciones)
-    if ubicacion:
+    if ubicacion and not titulo:
         q += " AND ubicacion LIKE %s"
         params.append(f"%{ubicacion.strip()}%")
+    elif titulo and not ubicacion:
+        q += " AND titulo LIKE %s"
+        params.append(f"%{titulo.strip()}%")
+    elif ubicacion and titulo:
+        # Búsqueda por nombre o ubicación (ej. "qué es Ibiza"): coincide en cualquiera
+        q += " AND (ubicacion LIKE %s OR titulo LIKE %s)"
+        params.extend([f"%{ubicacion.strip()}%", f"%{titulo.strip()}%"])
     q += " ORDER BY destacado DESC, orden, id LIMIT %s"
     params.append(limite)
 

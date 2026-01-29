@@ -226,16 +226,28 @@ def _add_opciones_cercanas_or_fallback(
 
 
 def _extract_lugar_info(texto: str) -> Optional[str]:
-    """Extrae lugar de 'información de Ibiza', 'info de X', 'todo de X'."""
-    if not texto or len(texto.strip()) < 4:
+    """
+    Extrae nombre de proyecto/propiedad o lugar de frases como:
+    'información de Ibiza', 'qué es Ibiza', 'que es Ibiza', 'hablame de X', 'info de X'.
+    Sirve para buscar por nombre (ej. proyecto Ibiza) o ubicación.
+    """
+    if not texto or len(texto.strip()) < 3:
         return None
     t = (texto or "").strip().lower()
-    for prefix in ["informacion de ", "información de ", "info de ", "todo de ", "datos de ", "qué hay en ", "que hay en "]:
+    # "información de X", "info de X", "qué hay en X"
+    for prefix in ["informacion de ", "información de ", "info de ", "todo de ", "datos de ", "qué hay en ", "que hay en ", "hablame de ", "cuéntame de ", "cuentame de ", "hablar de ", "contar de "]:
         if prefix in t:
             resto = t.split(prefix, 1)[-1].strip()
-            lugar = resto.split()[0] if resto else None
-            if lugar and len(lugar) >= 2:
-                return lugar
+            term = (resto.split()[0] if resto else "").strip(".,;:?!")
+            if term and len(term) >= 2:
+                return term
+    # "qué es Ibiza", "que es Ibiza", "qué es el Ibiza", "qué es la Ibiza"
+    for prefix in ["qué es ", "que es ", "q es ", "qué es el ", "que es el ", "qué es la ", "que es la "]:
+        if t.startswith(prefix):
+            resto = t[len(prefix):].strip().strip(".,;:?!")
+            term = resto.split()[0] if resto else ""
+            if term and len(term) >= 2:
+                return term
     return None
 
 
@@ -255,7 +267,8 @@ def handle_pedir_informacion(
     # "Información de [lugar]" (ej. Ibiza): buscar en BD y mostrar propiedades/proyectos con imágenes
     lugar = _extract_lugar_info(texto)
     if lugar:
-        props = buscar_propiedades(ubicacion=lugar, limite=6)
+        # Buscar por nombre (titulo/nombre) y por ubicación para "qué es Ibiza", "info de X", etc.
+        props = buscar_propiedades(ubicacion=lugar, titulo=lugar, limite=6)
         proyectos = buscar_proyectos(ubicacion=lugar, limite=4)
         lines = []
         cards = []

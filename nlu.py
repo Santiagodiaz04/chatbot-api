@@ -260,12 +260,30 @@ def extract_entities(texto: str) -> Dict[str, Any]:
 
 
 def extract_nombre(texto: str) -> Optional[str]:
-    """Extrae nombre (frase simple, sin números)."""
+    """
+    Extrae nombre (frase corta que parece un nombre, no una petición).
+    No devuelve frases como "quiero agendar cita" o "dame información".
+    """
     t = (texto or "").strip()
     t = re.sub(r"\s+", " ", t)
-    if len(t) < 2 or len(t) > 120:
+    if len(t) < 2 or len(t) > 80:
         return None
     if re.search(r"\d{5,}", t):
+        return None
+    # Palabras que indican que el texto es una petición, no un nombre
+    no_es_nombre = (
+        "agendar", "cita", "visita", "reservar", "quiero", "ver", "conocer",
+        "correo", "email", "teléfono", "telefono", "fecha", "hora", "horario",
+        "cuando", "información", "informacion", "busco", "buscar", "propiedad",
+        "proyecto", "opciones", "precio", "venta", "renta", "por favor", "gracias",
+        "hola", "buenas", "dame", "necesito", "me gustaría", "me gustaria",
+    )
+    tl = t.lower()
+    if any(p in tl for p in no_es_nombre):
+        return None
+    # Nombre razonable: pocas palabras (ej. "Juan Pérez" o "María García López")
+    palabras = t.split()
+    if len(palabras) > 4:
         return None
     return t if t else None
 
