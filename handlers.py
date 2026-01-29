@@ -337,6 +337,7 @@ def dispatch(
             natural = llm_generate_reply(texto, out["text"], intent)
             if natural:
                 out["text"] = natural
+                out["llm_used"] = True  # para saber si la respuesta pasó por Gemini
         except Exception:
             pass
 

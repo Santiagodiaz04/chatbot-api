@@ -71,7 +71,13 @@ Después de añadir o cambiar variables, Railway suele hacer **redeploy** autom�
    Debe devolver `{"status":"ok","db":"connected"}`.
 2. **Servicio:** `https://tu-app.up.railway.app/health`  
    Debe devolver `{"status":"ok","service":"chatbot-api"}`.
-3. **IA:** Abre el chat en tu sitio; si está activada la IA, las respuestas se verán más naturales (mismo flujo de cards y citas).
+3. **IA (Gemini):** Abre en el navegador:
+   ```
+   https://tu-app.up.railway.app/health/llm
+   ```
+   - Si la IA está activa verás: `"llm_enabled": true`, `"gemini_configured": true`, `"message": "IA (Gemini) activa"`.
+   - Si no: `"llm_enabled": false` o `"gemini_configured": false`.
+   - En cada respuesta del chat (DevTools → Network → respuesta de `/chat`) el campo `llm_used: true` indica que esa respuesta fue humanizada por Gemini.
 
 ---
 

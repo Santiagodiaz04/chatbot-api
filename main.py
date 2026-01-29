@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from config import CORS_ORIGINS, DB_PASS, PHP_BASE_URL
+from config import CORS_ORIGINS, DB_PASS, GEMINI_API_KEY, LLM_ENABLED, PHP_BASE_URL
 from db import crear_conversacion, get_conn, guardar_mensaje
 from handlers import dispatch
 
@@ -104,12 +104,37 @@ class ChatResponse(BaseModel):
     context: Dict[str, Any] = {}
     session_id: str
     intent: Optional[str] = None
+    llm_used: Optional[bool] = None  # True si la respuesta fue humanizada con Gemini
 
 
 @app.get("/health")
 def health():
     """Health check para monitoreo."""
     return {"status": "ok", "service": "chatbot-api"}
+
+
+def _llm_status():
+    """Estado de IA (Gemini). Usado por /health/llm y /llm."""
+    return {
+        "llm_enabled": bool(LLM_ENABLED),
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "message": "IA (Gemini) activa" if (LLM_ENABLED and GEMINI_API_KEY) else "IA desactivada o sin API key",
+    }
+
+
+@app.get("/health/llm")
+def health_llm():
+    """
+    Indica si la IA (Gemini) está configurada y activa.
+    Útil para saber si el chat usa humanización con Gemini.
+    """
+    return _llm_status()
+
+
+@app.get("/llm")
+def llm_status():
+    """Mismo que /health/llm. Por si se llama a /llm en lugar de /health/llm."""
+    return _llm_status()
 
 
 @app.get("/health/db")
@@ -204,4 +229,5 @@ def chat(req: ChatRequest):
         context=ctx,
         session_id=session_id,
         intent=intent,
+        llm_used=out.get("llm_used"),
     )
