@@ -86,6 +86,17 @@ def _has_search_criteria(texto: str) -> bool:
     return any(c in t for c in criterios) or bool(RE_NUMERO.search(texto)) or bool(RE_TIPO.search(texto))
 
 
+def _has_info_question(texto: str) -> bool:
+    """True si el mensaje es una pregunta rápida de info (ubicación, quiénes somos, contacto)."""
+    t = _normalize(texto)
+    info_words = [
+        "donde", "ubicados", "ubicacion", "ubicación", "direccion", "dirección",
+        "quienes somos", "quienes son", "que somos", "contacto", "telefono", "teléfono",
+        "horario", "horarios", "correo", "email", "dirección",
+    ]
+    return any(w in t for w in info_words)
+
+
 def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
     """
     Detecta intención predominante.
@@ -110,7 +121,9 @@ def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
     if esperando == "hora":
         return INTENT_AGENDAR_CITA
 
-    # Si dice "hola" pero también pide algo concreto (casa 3 hab, comprar, presupuesto) -> búsqueda
+    # Si dice "hola" pero también pregunta algo concreto -> priorizar esa intención
+    if _match_keywords(t, KEYWORDS_SALUDO) and _has_info_question(texto):
+        return INTENT_PEDIR_INFORMACION  # ej. "hola donde estan ubicados" -> responder ubicación
     if _match_keywords(t, KEYWORDS_SALUDO) and _has_search_criteria(texto):
         return INTENT_BUSCAR_PROPIEDAD
     if _match_keywords(t, KEYWORDS_SALUDO) and len(t) < 60:

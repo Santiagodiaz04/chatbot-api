@@ -30,9 +30,10 @@ from nlu import (
 from php_client import horarios_disponibles, procesar_cita
 
 try:
-    from llm_client import generate_reply as llm_generate_reply
+    from llm_client import build_data_context, generate_reply as llm_generate_reply
 except ImportError:
     llm_generate_reply = None
+    build_data_context = None
 
 
 def _cfg(key: str, default: str = "") -> str:
@@ -78,6 +79,10 @@ def handle_buscar_propiedad(
     habitaciones = ent.get("habitaciones") if ent.get("habitaciones") is not None else contexto.get("habitaciones")
     ubicacion = (ent.get("ubicacion") or "").strip() or (contexto.get("ubicacion") or "").strip()
 
+    # Si preguntan explícitamente por "proyectos", priorizar listado de proyectos (más resultados)
+    pide_proyectos = "proyecto" in (texto or "").lower()
+    limite_proyectos = 6 if pide_proyectos else 3
+
     props = buscar_propiedades(
         tipo=tipo,
         precio_min=precio_min,
@@ -86,7 +91,7 @@ def handle_buscar_propiedad(
         ubicacion=ubicacion if ubicacion else None,
         limite=6,
     )
-    proyectos = buscar_proyectos(ubicacion=ubicacion if ubicacion else None, limite=3)
+    proyectos = buscar_proyectos(ubicacion=ubicacion if ubicacion else None, limite=limite_proyectos)
 
     sale_msg = _cfg("mensaje_venta_propiedades", "Estas opciones podrían interesarte. ¿Quieres ver más detalles o agendar una visita?")
     urge_msg = _cfg("mensaje_urgencia", "Hay pocas con esas características; te conviene agendar pronto.")
@@ -122,11 +127,24 @@ def handle_buscar_propiedad(
                 lines, cards, base_url, agenda_msg, sale_msg,
             )
     else:
-        # Sin resultados exactos: buscar opciones más cercanas (relajar filtros)
-        _add_opciones_cercanas_or_fallback(
-            tipo, precio_min, precio_max, habitaciones, ubicacion,
-            lines, cards, base_url, agenda_msg, sale_msg,
-        )
+        # Sin resultados: si preguntaron por "proyectos" explícitamente, ofrecer propiedades (venta/renta/lotes)
+        if pide_proyectos:
+            props_general = buscar_propiedades(tipo=None, limite=6)
+            if props_general:
+                lines.append("Por ahora no tenemos proyectos cargados; sí tenemos **propiedades en venta, renta y lotes**. Aquí algunas opciones:")
+                for p in props_general[:4]:
+                    cards.append(_card_propiedad(p, base_url))
+                lines.append(sale_msg)
+                lines.append(agenda_msg)
+                ctx = {"tipo": tipo, "presupuesto_min": precio_min, "presupuesto_max": precio_max, "habitaciones": habitaciones, "ubicacion": ubicacion or None}
+                return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": ctx}
+            lines.append("Por ahora no tenemos proyectos cargados; sí trabajamos con propiedades en venta, renta y lotes. ¿Quieres que ajustemos criterios o agendamos una visita con un asesor?")
+            lines.append(agenda_msg)
+        else:
+            _add_opciones_cercanas_or_fallback(
+                tipo, precio_min, precio_max, habitaciones, ubicacion,
+                lines, cards, base_url, agenda_msg, sale_msg,
+            )
 
     ctx = {
         "tipo": tipo,
@@ -259,6 +277,13 @@ def handle_pedir_informacion(
         return {"text": msg, "actions": [], "context": {}}
 
     t = (texto or "").lower()
+    # Ubicación / quiénes somos: usar config si no hay FAQ (preguntas rápidas y sencillas)
+    if any(w in t for w in ["donde", "ubicados", "ubicacion", "ubicación", "direccion", "dirección"]):
+        msg = _cfg("respuesta_ubicacion") or _cfg("ubicacion") or "Puedes ver nuestra ubicación y datos de contacto en la web. ¿Quieres que te muestre propiedades o agendar una visita?"
+        return {"text": msg, "actions": [], "context": {}}
+    if any(w in t for w in ["quienes somos", "quienes son", "que somos", "ctr bienes"]):
+        msg = _cfg("respuesta_quienes_somos") or _cfg("quienes_somos") or "Somos CTR Bienes Raíces. Te ayudamos con propiedades en venta, renta y lotes. ¿Quieres ver opciones o agendar una visita?"
+        return {"text": msg, "actions": [], "context": {}}
     # Preguntas sobre detalles (garaje, servicios, requisitos, lotes): respuesta natural si no hay FAQ
     if any(w in t for w in ["garaje", "garage", "parqueadero", "servicios incluidos", "incluye", "requisitos", "documentos", "lote", "lotes"]):
         msg = "Ese detalle no lo tengo a mano aquí, pero un asesor te puede dar toda la información. ¿Quieres que te muestre opciones disponibles o prefieres agendar una visita?"
@@ -387,6 +412,12 @@ def handle_duda_general(texto: str, conversacion_id: Optional[str], base_url: st
         log_pregunta(conversacion_id, texto, "duda_general", faqs[0]["id"])
         return {"text": msg, "actions": [], "context": {}}
     t = (texto or "").lower()
+    if any(w in t for w in ["donde", "ubicados", "ubicacion", "ubicación", "direccion", "dirección"]):
+        msg = _cfg("respuesta_ubicacion") or _cfg("ubicacion") or "Puedes ver nuestra ubicación y contacto en la web. ¿Quieres que te muestre propiedades o agendar una visita?"
+        return {"text": msg, "actions": [], "context": {}}
+    if any(w in t for w in ["quienes somos", "quienes son", "que somos", "ctr bienes"]):
+        msg = _cfg("respuesta_quienes_somos") or _cfg("quienes_somos") or "Somos CTR Bienes Raíces. Te ayudamos con propiedades en venta, renta y lotes. ¿Quieres ver opciones o agendar una visita?"
+        return {"text": msg, "actions": [], "context": {}}
     if any(w in t for w in ["garaje", "garage", "servicios", "requisitos", "lote", "lotes", "renta", "arriendo"]):
         return {"text": "Ese dato no lo tengo aquí; un asesor te puede contar todo. ¿Te muestro opciones o agendamos una visita?", "actions": [], "context": {}}
     return {"text": "¿En qué te ayudo? Puedo mostrarte propiedades (venta, renta, lotes), proyectos o agendar una visita.", "actions": [], "context": {}}
@@ -422,13 +453,23 @@ def dispatch(
     if "context" not in out:
         out["context"] = {}
 
-    # IA opcional: humanizar el texto (cards, actions y context no cambian)
+    # Célula inteligente (IA): procesa respuesta con contexto de datos y conversación
     if llm_generate_reply and out.get("text"):
         try:
-            natural = llm_generate_reply(texto, out["text"], intent)
+            data_ctx = build_data_context(out.get("cards")) if build_data_context else None
+            last_user = (contexto.get("last_user_message") or "").strip() or None
+            last_bot = (contexto.get("last_bot_message") or "").strip() or None
+            natural = llm_generate_reply(
+                texto,
+                out["text"],
+                intent=intent,
+                data_context=data_ctx,
+                last_user_message=last_user,
+                last_bot_message=last_bot,
+            )
             if natural:
                 out["text"] = natural
-                out["llm_used"] = True  # para saber si la respuesta pasó por Gemini
+                out["llm_used"] = True
         except Exception:
             pass
 
