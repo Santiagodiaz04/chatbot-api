@@ -74,7 +74,6 @@ def handle_buscar_propiedad(
     ent = extract_entities(texto)
     tipo = ent.get("tipo") or contexto.get("tipo")
     precio_min = ent.get("presupuesto_min") or contexto.get("presupuesto_min")
-    # Presupuesto máximo: respetar estrictamente (nunca mostrar más caro que lo indicado)
     precio_max = ent.get("presupuesto_max") or contexto.get("presupuesto_max")
     habitaciones = ent.get("habitaciones") if ent.get("habitaciones") is not None else contexto.get("habitaciones")
     ubicacion = (ent.get("ubicacion") or "").strip() or (contexto.get("ubicacion") or "").strip()
@@ -102,48 +101,32 @@ def handle_buscar_propiedad(
         else:
             lines.append(f"Encontré **{len(props)}** propiedad(es) que encajan con lo que buscas.")
         for p in props[:4]:
-            cards.append({
-                "type": "propiedad",
-                "id": p["id"],
-                "titulo": p["titulo"],
-                "tipo": p.get("tipo", "venta"),
-                "ubicacion": p.get("ubicacion") or "",
-                "precio": _format_precio(float(p["precio"])) if p.get("precio") else "",
-                "habitaciones": p.get("habitaciones"),
-                "url": _url_propiedad(p["slug"], base_url),
-                "imagen": f"{base_url.rstrip('/')}/uploads/propiedades/{p['imagen_principal']}" if p.get("imagen_principal") else None,
-            })
+            cards.append(_card_propiedad(p, base_url))
         if len(props) <= 2:
             lines.append(urge_msg)
         lines.append(sale_msg)
         lines.append(agenda_msg)
     elif proyectos:
-        # Respetar presupuesto: no mostrar proyectos por encima del tope
         if precio_max is not None:
             proyectos = [pr for pr in proyectos if (pr.get("precio_desde") or 0) <= precio_max]
         if proyectos:
             lines.append(f"En proyectos encontré **{len(proyectos)}** opción(es).")
             for pr in proyectos[:3]:
-                cards.append({
-                    "type": "proyecto",
-                    "id": pr["id"],
-                    "titulo": pr["nombre"],
-                    "ubicacion": pr.get("ubicacion") or "",
-                    "precio_desde": _format_precio(float(pr["precio_desde"])) if pr.get("precio_desde") else "",
-                    "url": _url_proyecto(pr["slug"], base_url),
-                    "imagen": f"{base_url.rstrip('/')}/uploads/proyectos/{pr['imagen_principal']}" if pr.get("imagen_principal") else None,
-                })
+                cards.append(_card_proyecto(pr, base_url))
             lines.append(sale_msg)
             lines.append(agenda_msg)
         else:
-            lines.append("No encontré proyectos dentro de ese presupuesto. ¿Ajustamos el rango o prefieres que te muestre propiedades?")
-            lines.append(agenda_msg)
+            # Proyectos filtrados por presupuesto a cero: ofrecer opciones más cercanas
+            _add_opciones_cercanas_or_fallback(
+                tipo, precio_min, precio_max, habitaciones, ubicacion,
+                lines, cards, base_url, agenda_msg, sale_msg,
+            )
     else:
-        if precio_max:
-            lines.append(f"No encontré propiedades dentro de ese presupuesto. ¿Ajustamos el rango o te muestro opciones un poco más altas? También puedo agendar una visita para que un asesor te ayude.")
-        else:
-            lines.append("No encontré propiedades con esos criterios. ¿Ajustamos filtros (presupuesto, habitaciones, zona) o prefieres que te muestre opciones generales?")
-        lines.append(agenda_msg)
+        # Sin resultados exactos: buscar opciones más cercanas (relajar filtros)
+        _add_opciones_cercanas_or_fallback(
+            tipo, precio_min, precio_max, habitaciones, ubicacion,
+            lines, cards, base_url, agenda_msg, sale_msg,
+        )
 
     ctx = {
         "tipo": tipo,
@@ -153,6 +136,114 @@ def handle_buscar_propiedad(
         "ubicacion": ubicacion or None,
     }
     return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": ctx}
+
+
+def _card_propiedad(p: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    return {
+        "type": "propiedad",
+        "id": p["id"],
+        "titulo": p["titulo"],
+        "tipo": p.get("tipo", "venta"),
+        "ubicacion": p.get("ubicacion") or "",
+        "precio": _format_precio(float(p["precio"])) if p.get("precio") else "",
+        "habitaciones": p.get("habitaciones"),
+        "url": _url_propiedad(p["slug"], base_url),
+        "imagen": f"{base_url.rstrip('/')}/uploads/propiedades/{p['imagen_principal']}" if p.get("imagen_principal") else None,
+    }
+
+
+def _card_proyecto(pr: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    return {
+        "type": "proyecto",
+        "id": pr["id"],
+        "titulo": pr["nombre"],
+        "ubicacion": pr.get("ubicacion") or "",
+        "precio_desde": _format_precio(float(pr["precio_desde"])) if pr.get("precio_desde") else "",
+        "url": _url_proyecto(pr["slug"], base_url),
+        "imagen": f"{base_url.rstrip('/')}/uploads/proyectos/{pr['imagen_principal']}" if pr.get("imagen_principal") else None,
+    }
+
+
+def _add_opciones_cercanas_or_fallback(
+    tipo: Optional[str],
+    precio_min: Optional[float],
+    precio_max: Optional[float],
+    habitaciones: Optional[int],
+    ubicacion: Optional[str],
+    lines: List[str],
+    cards: List[Dict[str, Any]],
+    base_url: str,
+    agenda_msg: str,
+    sale_msg: str,
+) -> None:
+    """
+    Si no hay coincidencia exacta, busca opciones más cercanas (menos habitaciones,
+    o un poco más de presupuesto) y responde de forma conversacional.
+    """
+    # Relajar filtros: 1 hab menos, o precio hasta +20% si dio presupuesto
+    hab_relajado = (habitaciones - 1) if habitaciones and habitaciones > 1 else None
+    precio_max_relajado = (precio_max * 1.2) if precio_max else None
+
+    props_cercanas = buscar_propiedades(
+        tipo=tipo,
+        precio_min=precio_min,
+        precio_max=precio_max_relajado,
+        habitaciones=hab_relajado,
+        ubicacion=ubicacion,
+        limite=6,
+    )
+
+    if props_cercanas:
+        # Opciones más cercanas: mensaje adaptado a lo que pidió el usuario
+        partes = []
+        if habitaciones and precio_max:
+            partes.append(f"De momento no tenemos exactamente {habitaciones} habitaciones dentro de ese presupuesto.")
+        elif habitaciones:
+            partes.append(f"De momento no tenemos una con exactamente {habitaciones} habitaciones.")
+        elif precio_max:
+            partes.append("No encontré propiedades dentro de ese presupuesto.")
+        else:
+            partes.append("No encontré propiedades con esas características.")
+        partes.append("Aquí van las **opciones más cercanas** que sí tenemos:")
+        lines.append(" ".join(partes))
+        for p in props_cercanas[:4]:
+            cards.append(_card_propiedad(p, base_url))
+        # Resumen breve: ej. "Por ejemplo: 4 hab por $320M"
+        ejemplos = []
+        for p in props_cercanas[:2]:
+            hab = p.get("habitaciones")
+            prec = _format_precio(float(p["precio"])) if p.get("precio") else ""
+            if hab and prec:
+                ejemplos.append(f"{hab} hab por {prec}")
+        if ejemplos:
+            lines.append("Por ejemplo: " + ", ".join(ejemplos) + ".")
+        lines.append("¿Te sirve alguna o preferimos ajustar (más habitaciones, otro rango)? También puedo agendar una visita con un asesor.")
+        lines.append(agenda_msg)
+        return
+
+    # Sin opciones cercanas: búsqueda muy amplia (solo tipo y ubicación)
+    props_general = buscar_propiedades(
+        tipo=tipo,
+        precio_min=None,
+        precio_max=None,
+        habitaciones=None,
+        ubicacion=ubicacion,
+        limite=4,
+    )
+    if props_general:
+        lines.append("No tenemos justo lo que buscas, pero aquí van **otras opciones** que podrían interesarte:")
+        for p in props_general[:4]:
+            cards.append(_card_propiedad(p, base_url))
+        lines.append("¿Ajustamos criterios o agendamos una visita para que un asesor te ayude?")
+        lines.append(agenda_msg)
+        return
+
+    # Nada en BD: mensaje según si mencionó presupuesto o no
+    if precio_max:
+        lines.append("No encontré propiedades dentro de ese presupuesto. ¿Ajustamos el rango o te muestro opciones un poco más altas? También puedo agendar una visita para que un asesor te ayude.")
+    else:
+        lines.append("Por ahora no tenemos propiedades con esos criterios. ¿Quieres que ajustemos (habitaciones, zona, tipo) o prefieres que agende una visita con un asesor?")
+    lines.append(agenda_msg)
 
 
 def handle_pedir_informacion(
