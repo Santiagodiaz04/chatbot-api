@@ -65,6 +65,8 @@ def run_reasoning(
         - reasoning_text: párrafo en español para el bot (nunca "no hay" sin alternativa)
     """
     ubic = ubicacion.strip() if ubicacion else None
+    # Buscar por nombre de proyecto/propiedad o ubicación: mismo término en titulo y ubicacion
+    titulo_term = ubic  # así "busco Ibiza" encuentra por nombre (titulo) y por ubicación
 
     # --- 1. CONSULTAR: coincidencia exacta ---
     props_exact = buscar_propiedades(
@@ -73,6 +75,7 @@ def run_reasoning(
         precio_max=precio_max,
         habitaciones=habitaciones,
         ubicacion=ubic,
+        titulo=titulo_term,
         limite=6,
     )
     proyectos_exact = buscar_proyectos(ubicacion=ubic, limite=6 if pide_proyectos else 3)
@@ -80,9 +83,9 @@ def run_reasoning(
         proyectos_exact = [p for p in proyectos_exact if (p.get("precio_desde") or 0) <= precio_max]
 
     if props_exact:
-        # Coincidencia exacta: mensaje positivo e invitación a ver/agendar
+        # Coincidencia exacta: mensaje cercano y humano ("Sí, claro. Tengo...")
         count = len(props_exact)
-        reasoning = f"Encontré {count} opción(es) que coinciden con lo que buscas. ¿Te gustaría ver más detalles o agendar una visita para conocerlas? 🏡"
+        reasoning = f"Sí, claro. Tengo {count} opción(es) que coinciden con lo que buscas. ¿Te gustaría ver más detalles o agendar una visita para conocerlas? 🏡"
         return MATCH_EXACT, props_exact, [], reasoning
 
     if proyectos_exact and (pide_proyectos or not tipo):
@@ -100,6 +103,7 @@ def run_reasoning(
         precio_max=precio_max_relajado,
         habitaciones=hab_relajado,
         ubicacion=ubic,
+        titulo=titulo_term,
         limite=6,
     )
 

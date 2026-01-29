@@ -92,12 +92,14 @@ def buscar_propiedades(
     ubicacion: Optional[str] = None,
     titulo: Optional[str] = None,
     proyecto_id: Optional[int] = None,
+    exclude_ids: Optional[List[int]] = None,
     limite: int = 6,
 ) -> List[dict]:
     """
     Filtrar propiedades activas y disponibles.
     tipo: venta | renta | lote
     ubicacion/titulo: búsqueda por ubicación o por nombre (titulo) de la propiedad.
+    exclude_ids: excluir estos IDs (para "qué otra tienes").
     """
     q = """
         SELECT id, titulo, slug, tipo, ubicacion, precio, habitaciones, banos,
@@ -118,6 +120,10 @@ def buscar_propiedades(
     if habitaciones is not None:
         q += " AND habitaciones >= %s"
         params.append(habitaciones)
+    if exclude_ids:
+        placeholders = ", ".join(["%s"] * len(exclude_ids))
+        q += f" AND id NOT IN ({placeholders})"
+        params.extend(exclude_ids)
     if ubicacion and not titulo:
         q += " AND ubicacion LIKE %s"
         params.append(f"%{ubicacion.strip()}%")
@@ -134,6 +140,21 @@ def buscar_propiedades(
     with cursor_dict() as cur:
         cur.execute(q, params)
         return cur.fetchall()
+
+
+def get_propiedad_by_id(propiedad_id: int) -> Optional[dict]:
+    """Obtener una propiedad por ID (para preguntas de seguimiento: baños, detalles)."""
+    with cursor_dict() as cur:
+        cur.execute(
+            """
+            SELECT id, titulo, slug, tipo, ubicacion, precio, habitaciones, banos,
+                   area_construida, area_total, imagen_principal, descripcion
+            FROM propiedades
+            WHERE activo = 1 AND estado = 'disponible' AND id = %s
+            """,
+            (propiedad_id,),
+        )
+        return cur.fetchone()
 
 
 def buscar_proyectos(

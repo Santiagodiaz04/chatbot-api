@@ -15,6 +15,8 @@ INTENT_AGENDAR_CITA = "agendar_cita"
 INTENT_DUDA_GENERAL = "duda_general"
 INTENT_DESPEDIDA = "despedida"
 INTENT_CONFIRMAR_DATOS = "confirmar_datos"  # nombre, teléfono para cita
+INTENT_PREGUNTA_SOBRE_PROPIEDAD = "pregunta_sobre_propiedad"  # cuántos baños tiene, qué más tiene (contexto: ref_id)
+INTENT_PEDIR_OTRA_OPCION = "pedir_otra_opcion"  # qué otra tienes, otra disponible, la siguiente
 
 # Keywords por intención (minúsculas)
 KEYWORDS_SALUDO = [
@@ -149,6 +151,14 @@ def detect_intent(texto: str, contexto: Optional[Dict[str, Any]] = None) -> str:
     if "tienen" in t or "hay" in t:
         return INTENT_BUSCAR_PROPIEDAD if any(w in t for w in ["propiedad", "casa", "aparto", "proyecto", "venta", "renta", "lote"]) else INTENT_PEDIR_INFORMACION
 
+    # "¿Qué otra tienes?", "otra opción", "la siguiente", "otra disponible" (mismo contexto de búsqueda)
+    if ctx.get("referencia_id") or ctx.get("tipo_referencia"):
+        if any(w in t for w in ["otra", "otro", "siguiente", "otras opciones", "qué más tienes", "que mas tienes", "alguna más", "alguna mas", "otra disponible", "otra opcion", "otra opción"]):
+            return INTENT_PEDIR_OTRA_OPCION
+        # "¿Cuántos baños tiene?", "y los baños?", "qué más tiene" (sobre la propiedad mostrada)
+        if any(w in t for w in ["baños", "banos", "cuántos baños", "cuantos banos", "cuantos baños", "cuántos banos", "y los baños", "tiene baño", "tiene bano", "qué más tiene", "que mas tiene", "cuántas habitaciones tiene", "cuantas habitaciones"]):
+            return INTENT_PREGUNTA_SOBRE_PROPIEDAD
+
     return INTENT_DUDA_GENERAL
 
 
@@ -166,25 +176,17 @@ def extract_entities(texto: str) -> Dict[str, Any]:
         "ubicacion": None,
     }
 
-    # Tipo (prioridad: renta > lote > venta)
-    for m in RE_TIPO.finditer(t):
-        v = m.group(1).lower()
-        if v in ("renta", "arriendo"):
-            out["tipo"] = "renta"
-            break
-        if v == "lote":
-            out["tipo"] = "lote"
-            break
-        if v in ("venta", "casa", "apartamento", "aparto"):
-            out["tipo"] = "venta"
-            break
-    if not out["tipo"]:
-        if "renta" in t or "arriendo" in t:
-            out["tipo"] = "renta"
-        elif "lote" in t:
-            out["tipo"] = "lote"
-        elif "venta" in t or "comprar" in t:
-            out["tipo"] = "venta"
+    # Tipo: prioridad explícita. "casa renta" = RENTA, no venta.
+    # Si el usuario dice renta/arriendo, siempre filtrar por renta aunque diga "casa".
+    if "renta" in t or "arriendo" in t:
+        out["tipo"] = "renta"
+    elif "lote" in t:
+        out["tipo"] = "lote"
+    elif "venta" in t or "comprar" in t:
+        out["tipo"] = "venta"
+    elif any(w in t for w in ("casa", "apartamento", "aparto")):
+        # "casa" o "aparto" sin "renta" = asumir venta (búsqueda general)
+        out["tipo"] = "venta"
 
     # Habitaciones
     for m in RE_NUMERO.finditer(t):
@@ -244,7 +246,7 @@ def extract_entities(texto: str) -> Dict[str, Any]:
                     out["presupuesto_min"] = val
                 break
 
-    # Ubicación
+    # Ubicación: "en X", "zona X", ciudades conocidas
     for m in RE_UBICACION.finditer(t):
         u = (m.group(1) or m.group(2) or "").strip()
         if len(u) >= 2:
@@ -255,6 +257,19 @@ def extract_entities(texto: str) -> Dict[str, Any]:
             if w in t:
                 out["ubicacion"] = w.capitalize()
                 break
+    # Nombre de proyecto/propiedad o lugar: "busco Ibiza", "tienen el proyecto X", "propiedad Vista Norte"
+    if not out["ubicacion"]:
+        name_match = re.search(
+            r"(?:busco|tienen|hay|quiero|muestra(?:me)?|información\s+de|info\s+de)\s+"
+            r"(?:el\s+)?(?:proyecto|propiedad|casa|aparto)?\s*"
+            r"([a-zA-ZáéíóúÁÉÍÓÚñÑ\-]{2,40})(?:\s|$|\.|,)",
+            t,
+            re.I,
+        )
+        if name_match:
+            term = name_match.group(1).strip()
+            if term and term not in ("venta", "renta", "lote", "opciones", "disponibles"):
+                out["ubicacion"] = term
 
     return out
 

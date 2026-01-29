@@ -11,18 +11,21 @@ from db import (
     buscar_proyectos,
     config_get,
     faq_match,
+    get_propiedad_by_id,
     log_pregunta,
     marcar_conversion_cita,
 )
 from nlu import (
     INTENT_AGENDAR_CITA,
     INTENT_BUSCAR_PROPIEDAD,
+    INTENT_COMPARAR_OPCIONES,
     INTENT_CONFIRMAR_DATOS,
     INTENT_DESPEDIDA,
     INTENT_DUDA_GENERAL,
     INTENT_PEDIR_INFORMACION,
+    INTENT_PEDIR_OTRA_OPCION,
     INTENT_PEDIR_RECOMENDACION,
-    INTENT_COMPARAR_OPCIONES,
+    INTENT_PREGUNTA_SOBRE_PROPIEDAD,
     INTENT_SALUDO,
     detect_intent,
     extract_entities,
@@ -114,6 +117,14 @@ def handle_buscar_propiedad(
         "habitaciones": habitaciones,
         "ubicacion": ubicacion or None,
     }
+    # Guardar la primera propiedad mostrada para preguntas de seguimiento ("cuántos baños tiene", "qué otra tienes")
+    if props:
+        ctx["tipo_referencia"] = "propiedad"
+        ctx["referencia_id"] = props[0]["id"]
+        ctx["propiedades_mostradas_ids"] = [p["id"] for p in props[:4]]
+    if proyectos and not props:
+        ctx["tipo_referencia"] = "proyecto"
+        ctx["referencia_id"] = proyectos[0]["id"]
     return {"text": "\n\n".join(lines), "actions": [], "cards": cards, "context": ctx}
 
 
@@ -126,6 +137,8 @@ def _card_propiedad(p: Dict[str, Any], base_url: str) -> Dict[str, Any]:
         "ubicacion": p.get("ubicacion") or "",
         "precio": _format_precio(float(p["precio"])) if p.get("precio") else "",
         "habitaciones": p.get("habitaciones"),
+        "banos": p.get("banos"),
+        "descripcion": (p.get("descripcion") or "").strip(),
         "url": _url_propiedad(p["slug"], base_url),
         "imagen": f"{base_url.rstrip('/')}/uploads/propiedades/{p['imagen_principal']}" if p.get("imagen_principal") else None,
     }
@@ -138,6 +151,7 @@ def _card_proyecto(pr: Dict[str, Any], base_url: str) -> Dict[str, Any]:
         "titulo": pr["nombre"],
         "ubicacion": pr.get("ubicacion") or "",
         "precio_desde": _format_precio(float(pr["precio_desde"])) if pr.get("precio_desde") else "",
+        "descripcion": (pr.get("descripcion") or "").strip(),
         "url": _url_proyecto(pr["slug"], base_url),
         "imagen": f"{base_url.rstrip('/')}/uploads/proyectos/{pr['imagen_principal']}" if pr.get("imagen_principal") else None,
     }
@@ -169,6 +183,7 @@ def _add_opciones_cercanas_or_fallback(
         precio_max=precio_max_relajado,
         habitaciones=hab_relajado,
         ubicacion=ubicacion,
+        titulo=ubicacion,
         limite=6,
     )
 
@@ -200,13 +215,14 @@ def _add_opciones_cercanas_or_fallback(
         lines.append(agenda_msg)
         return
 
-    # Sin opciones cercanas: búsqueda muy amplia (solo tipo y ubicación)
+    # Sin opciones cercanas: búsqueda muy amplia (solo tipo, ubicación y nombre)
     props_general = buscar_propiedades(
         tipo=tipo,
         precio_min=None,
         precio_max=None,
         habitaciones=None,
         ubicacion=ubicacion,
+        titulo=ubicacion,
         limite=4,
     )
     if props_general:
@@ -448,6 +464,120 @@ def handle_confirmar_datos(
     return handle_agendar_cita(texto, contexto, conversacion_id, base_url)
 
 
+def handle_pregunta_sobre_propiedad(
+    texto: str,
+    contexto: Dict[str, Any],
+    conversacion_id: Optional[str],
+    base_url: str,
+) -> Dict[str, Any]:
+    """
+    Responde preguntas sobre la propiedad mostrada: cuántos baños tiene, qué más tiene, etc.
+    Contexto debe tener tipo_referencia y referencia_id (propiedad).
+    """
+    tipo_ref = contexto.get("tipo_referencia")
+    ref_id = contexto.get("referencia_id")
+    if tipo_ref != "propiedad" or not ref_id:
+        return handle_duda_general(texto, conversacion_id, base_url)
+
+    prop = get_propiedad_by_id(int(ref_id))
+    if not prop:
+        return {"text": "Esa propiedad ya no está disponible. ¿Quieres que te muestre otras opciones?", "actions": [], "context": {}}
+
+    t = (texto or "").lower()
+    lines: List[str] = []
+    # Pregunta por baños
+    if "baño" in t or "bano" in t or "baños" in t or "banos" in t:
+        banos = prop.get("banos")
+        if banos is not None:
+            lines.append(f"Sí, tiene {banos} baño(s).")
+        else:
+            lines.append("Ese dato no lo tengo aquí; un asesor te puede confirmar. ¿Te gustaría agendar una visita?")
+    # Pregunta por habitaciones
+    elif "habitacion" in t or "habitaciones" in t or "alcoba" in t or "cuartos" in t:
+        hab = prop.get("habitaciones")
+        if hab is not None:
+            lines.append(f"Tiene {hab} habitación(es).")
+        else:
+            lines.append("Un asesor te puede dar ese detalle. ¿Agendamos una visita?")
+    else:
+        # Resumen breve: habitaciones, baños, precio
+        partes = []
+        if prop.get("habitaciones") is not None:
+            partes.append(f"{prop['habitaciones']} hab")
+        if prop.get("banos") is not None:
+            partes.append(f"{prop['banos']} baño(s)")
+        if prop.get("precio"):
+            partes.append(_format_precio(float(prop["precio"])))
+        if partes:
+            lines.append(f"Esa tiene: {', '.join(partes)}.")
+        else:
+            lines.append("¿Quieres que agendemos una visita para que un asesor te cuente todos los detalles?")
+    agenda_msg = _cfg("mensaje_agendar_cita", "¿Te gustaría agendar una visita?")
+    lines.append(agenda_msg)
+    return {"text": " ".join(lines), "actions": [], "context": contexto}
+
+
+def handle_pedir_otra_opcion(
+    texto: str,
+    contexto: Dict[str, Any],
+    conversacion_id: Optional[str],
+    base_url: str,
+) -> Dict[str, Any]:
+    """
+    "Qué otra tienes disponible": misma búsqueda pero excluyendo la(s) ya mostrada(s).
+    Responde de forma fluida: "Claro, también tengo [Casa X]. Tiene N hab, M baños..."
+    """
+    tipo = contexto.get("tipo")
+    precio_min = contexto.get("presupuesto_min")
+    precio_max = contexto.get("presupuesto_max")
+    habitaciones = contexto.get("habitaciones")
+    ubicacion = (contexto.get("ubicacion") or "").strip() or None
+    mostradas = contexto.get("propiedades_mostradas_ids") or []
+    ref_id = contexto.get("referencia_id")
+    if ref_id and ref_id not in mostradas:
+        mostradas = mostradas + [ref_id]
+    exclude_ids = mostradas if mostradas else ([ref_id] if ref_id else None)
+
+    props = buscar_propiedades(
+        tipo=tipo,
+        precio_min=precio_min,
+        precio_max=precio_max,
+        habitaciones=habitaciones,
+        ubicacion=ubicacion,
+        exclude_ids=exclude_ids,
+        limite=4,
+    )
+    if not props:
+        # No hay más con esos filtros; ofrecer búsqueda más amplia o visita
+        msg = "Con esos criterios ya te mostré las que tenía. ¿Quieres que ajustemos (más habitaciones, otra zona) o agendamos una visita y un asesor te muestra más opciones?"
+        return {"text": msg, "actions": [], "context": contexto}
+
+    primera = props[0]
+    card = _card_propiedad(primera, base_url)
+    titulo = primera.get("titulo") or "esta opción"
+    hab = primera.get("habitaciones")
+    banos = primera.get("banos")
+    prec = _format_precio(float(primera["precio"])) if primera.get("precio") else ""
+    partes = [f"Claro, también tengo **{titulo}**."]
+    if hab is not None:
+        partes.append(f"Tiene {hab} habitación(es).")
+    if banos is not None:
+        partes.append(f"{banos} baño(s).")
+    if prec:
+        partes.append(f"Precio {prec}.")
+    partes.append("¿Te interesa o prefieres que te muestre otra? También puedo agendar una visita.")
+    agenda_msg = _cfg("mensaje_agendar_cita", "¿Te gustaría agendar una visita?")
+    partes.append(agenda_msg)
+
+    ctx = dict(contexto)
+    ctx["tipo_referencia"] = "propiedad"
+    ctx["referencia_id"] = primera["id"]
+    nuevas_mostradas = list(mostradas) + [primera["id"]]
+    ctx["propiedades_mostradas_ids"] = nuevas_mostradas[:10]
+
+    return {"text": " ".join(partes), "actions": [], "cards": [card], "context": ctx}
+
+
 def handle_pedir_recomendacion(
     texto: str,
     contexto: Dict[str, Any],
@@ -498,6 +628,8 @@ def dispatch(
         INTENT_SALUDO: lambda: handle_saludo(conversacion_id, base_url),
         INTENT_DESPEDIDA: lambda: handle_despedida(conversacion_id, base_url),
         INTENT_BUSCAR_PROPIEDAD: lambda: handle_buscar_propiedad(texto, contexto, conversacion_id, base_url),
+        INTENT_PREGUNTA_SOBRE_PROPIEDAD: lambda: handle_pregunta_sobre_propiedad(texto, contexto, conversacion_id, base_url),
+        INTENT_PEDIR_OTRA_OPCION: lambda: handle_pedir_otra_opcion(texto, contexto, conversacion_id, base_url),
         INTENT_COMPARAR_OPCIONES: lambda: handle_comparar_opciones(texto, contexto, conversacion_id, base_url),
         INTENT_PEDIR_RECOMENDACION: lambda: handle_pedir_recomendacion(texto, contexto, conversacion_id, base_url),
         INTENT_PEDIR_INFORMACION: lambda: handle_pedir_informacion(texto, conversacion_id, base_url),

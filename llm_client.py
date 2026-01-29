@@ -14,13 +14,17 @@ from config import GEMINI_API_KEY, LLM_ENABLED
 logger = logging.getLogger("chatbot-api")
 
 # Personalidad por defecto: asesor inmobiliario inteligente (secretaria experta)
+# La IA recibe contexto real de la BD: nombre de proyecto, título de propiedad, ubicación, precio, características.
 DEFAULT_SYSTEM_PROMPT = (
     "Eres la secretaria experta de CTR Bienes Raíces (inmobiliaria). "
-    "Comportamiento: amable, cercana, profesional. Analiza qué quiere el cliente, "
-    "usa SOLO la información que te damos (nunca inventes precios ni propiedades). "
+    "Usa SIEMPRE el contexto de la base de datos que te damos: nombre del proyecto, título de la propiedad, "
+    "ubicación, precio, características (habitaciones, tipo venta/renta). Responde según lo que el usuario "
+    "pregunte (por ubicación, por nombre de proyecto o propiedad, por precio, por características). "
+    "NUNCA inventes datos; usa SOLO la información que te pasamos. "
     "NUNCA digas 'no hay' sin ofrecer una alternativa o invitar a agendar. "
     "Siempre orienta hacia ver la propiedad o agendar una visita. "
-    "Responde en el mismo idioma que el usuario. Tono conversacional; emojis moderados (🙂🏡📅). "
+    "Comportamiento: amable, cercana, profesional. Responde en el mismo idioma que el usuario. "
+    "Tono conversacional; emojis moderados (🙂🏡📅). "
     "Si el borrador ya ofrece alternativas, refuerza el valor y la invitación a agendar."
 )
 
@@ -31,36 +35,51 @@ TIMEOUT = 18.0
 
 def build_data_context(cards: Optional[List[Dict[str, Any]]]) -> str:
     """
-    Construye un resumen corto de los datos (propiedades/proyectos) para que la IA
-    tenga contexto real de la BD y genere una respuesta coherente.
+    Construye un resumen de los datos (propiedades/proyectos) para que la IA
+    tenga contexto real de la BD: nombre de proyecto, título de propiedad,
+    ubicación, precio, características. Así la IA responde bien por ubicación,
+    nombre, precio o características.
     """
     if not cards or not isinstance(cards, list):
         return "Sin resultados en base de datos para esta búsqueda."
 
     lines: List[str] = []
-    for i, c in enumerate(cards[:5]):
+    for c in cards[:6]:
         card_type = (c.get("type") or "propiedad").lower()
         titulo = (c.get("titulo") or "").strip() or "Sin título"
         ubicacion = (c.get("ubicacion") or "").strip()
+        desc = (c.get("descripcion") or "").strip()[:80]
         if card_type == "proyecto":
             precio = c.get("precio_desde") or ""
-            lines.append(f"- Proyecto: {titulo}" + (f", {ubicacion}" if ubicacion else "") + (f", {precio}" if precio else ""))
+            line = f"- Proyecto: {titulo}"
+            if ubicacion:
+                line += f", ubicación: {ubicacion}"
+            if precio:
+                line += f", desde {precio}"
+            if desc:
+                line += f". {desc}"
+            lines.append(line)
         else:
             precio = c.get("precio") or ""
             hab = c.get("habitaciones")
+            banos = c.get("banos")
             tipo = c.get("tipo") or "venta"
-            parts = [f"- {titulo}", tipo]
+            line = f"- Propiedad: {titulo}, {tipo}"
             if ubicacion:
-                parts.append(ubicacion)
+                line += f", ubicación: {ubicacion}"
             if precio:
-                parts.append(str(precio))
+                line += f", precio: {precio}"
             if hab is not None:
-                parts.append(f"{hab} hab")
-            lines.append(" ".join(parts))
+                line += f", {hab} hab"
+            if banos is not None:
+                line += f", {banos} baños"
+            if desc:
+                line += f". {desc}"
+            lines.append(line)
 
     if not lines:
         return "Sin resultados en base de datos para esta búsqueda."
-    return "Datos de la base de datos:\n" + "\n".join(lines)
+    return "Contexto de la base de datos (usa esto para responder por nombre, ubicación, precio o características):\n" + "\n".join(lines)
 
 
 def process_response(
